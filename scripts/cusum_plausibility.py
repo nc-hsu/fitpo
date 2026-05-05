@@ -49,12 +49,17 @@ def run_pushover_analysis(poc_path, threshold=4, drift=0.5):
     # Identify markers for the specific drop zone near 200mm
     drops = [idx for label, idx in triggers 
                    if label == 'neg']
-    # drop_ends = [idx for label, idx in triggers 
-    #              if label == 'neg' and 205 < disp[idx] < 220]
-    
+
+    rises = [idx for label, idx in triggers 
+                   if label == 'pos']
+
     ps = np.array((disp[drops], force[drops])) if drops else None
     p_start = (disp[drops[0]-1], force[drops[0]-1]) if drops else None
     p_end = (disp[drops[-1]+1], force[drops[-1]+1]) if drops else None # end of drop
+
+    rs = np.array((disp[rises], force[rises])) if drops else None
+    r_start = (disp[rises[0]-1], force[rises[0]-1]) if drops else None
+    r_end = (disp[rises[-1]+1], force[rises[-1]+1]) if drops else None # end of drop
 
     # Visualization
     fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 10), sharex=True)
@@ -65,6 +70,9 @@ def run_pushover_analysis(poc_path, threshold=4, drift=0.5):
         ax1.scatter(*p_start, color='green', s=100, label=f'Drop Start {p_start[0]:.2f}mm', zorder=5)
         ax1.scatter(*ps, color='red', s=100, label=f'Drops', zorder=4)
         ax1.scatter(*p_end, color='blue', s=100, label=f'Drop End: {p_end[0]:.2f}mm', zorder=5)
+        ax1.scatter(*r_start, color='magenta', s=100, label=f'Rise Start {r_start[0]:.2f}mm', zorder=5)
+        ax1.scatter(*rs, color='yellow', s=100, label=f'Rises', zorder=4)
+        ax1.scatter(*r_end, color='orange', s=100, label=f'Rises End: {r_end[0]:.2f}mm', zorder=5)
         ax1.axvspan(p_start[0], p_end[0], color='yellow', alpha=0.2, label='Capacity Drop Zone')
 
     ax1.set_ylabel('Force / Capacity')
@@ -89,6 +97,6 @@ def run_pushover_analysis(poc_path, threshold=4, drift=0.5):
 if __name__ == "__main__":
     from pathlib import Path
     poc_path = Path(r"C:\Users\clemettn\Documents\pypackages\fitpo\example_po_curves") / "po_curve_71.csv"
-    threshold = 4
-    drift = 0.5
+    threshold = 2
+    drift = 0.3
     run_pushover_analysis(poc_path, threshold=threshold, drift=drift)

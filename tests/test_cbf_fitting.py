@@ -106,10 +106,10 @@ def test_synthetic_round_trip() -> None:
     # Yield point
     assert close(fit[1, 0], d_y), f"d_y: {fit[1,0]:.2f} vs {d_y}"
     assert close(fit[1, 1], f_y), f"f_y: {fit[1,1]:.2f} vs {f_y}"
-    # Fracture start (anchored, so should match d_f closely)
-    assert close(fit[2, 0], d_f, rel=0.05), f"d_f: {fit[2,0]:.2f} vs {d_f}"
-    # Residual start
-    assert close(fit[3, 0], d_r, rel=0.20), f"d_r: {fit[3,0]:.2f} vs {d_r}"
+    # Segment 2-3 transition slides on the drop line within [d_f, d_r].
+    assert close(fit[2, 0], d_f, rel=0.05), f"d_joint: {fit[2,0]:.2f} vs {d_f}"
+    # Segment 3-4 transition slides on the drop line within [d_r, d_max].
+    assert close(fit[3, 0], d_r, rel=0.50), f"d_r2: {fit[3,0]:.2f} vs {d_r}"
 
 
 # ---------------------------------------------------------------------------

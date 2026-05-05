@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import numpy as np
 import numpy.typing as npt
-from scipy.ndimage import uniform_filter1d
 from scipy.optimize import minimize_scalar
 
 FloatArr = npt.NDArray[np.float64]
@@ -15,11 +14,9 @@ _ELASTIC_REF_FRACTION = 0.10
 def fit_cbf_backbone(
     pushover: npt.ArrayLike,
     *,
-    smoothing_window: int | None = None,
-    yield_slope_fraction: float = 0.5,
     cusum_threshold: float = 4.0,
     cusum_drift: float = 0.5,
-    cusum_search_start_factor: float = 3.0,
+    cusum_search_start_fraction: float = 0.25,
 ) -> FloatArr:
     """Fit a 4-segment backbone to a CBF-style pushover curve.
 
@@ -27,23 +24,22 @@ def fit_cbf_backbone(
     ----------
     pushover
         Shape (N, 2): col 0 displacement (monotone), col 1 force.
-    smoothing_window
-        Rolling-mean window for yield-slope computation. Default: max(5, N // 100).
-    yield_slope_fraction
-        Fraction of initial tangent stiffness below which the yield kink is flagged.
     cusum_threshold
         CUSUM trigger threshold on standardised velocity.
     cusum_drift
         CUSUM drift parameter on standardised velocity.
-    cusum_search_start_factor
-        CUSUM begins searching at the first sample where d >= d_y * factor.
-        Values > 1 are expected; this prevents the elastic→post-buckling kink
-        from being mistaken for the fracture event.
+    cusum_search_start_fraction
+        CUSUM begins searching at the first sample where d >= d_max * fraction.
+        Raise for curves with pre-fracture noise (e.g. minor local drops).
 
     Returns
     -------
     (5, 2) float64 ndarray of breakpoints:
-    [[0, 0], [d_y, f_y], [d_f, f_f], [d_r, f_r], [d_max, f_end]]
+    [[0, 0], [d_y, f_y], [d_joint, f_joint], [d_r2, f_r2], [d_max, f_end]]
+
+    Rows 2 and 3 lie on the CUSUM-derived fracture-drop line; their
+    displacements are chosen so segments 2 and 4 each minimise their absolute
+    area error against the data.
     """
     arr = np.asarray(pushover, dtype=np.float64)
     if arr.ndim != 2 or arr.shape[1] != 2:
@@ -62,25 +58,27 @@ def fit_cbf_backbone(
     if i_peak >= n - 1:
         raise ValueError("No descending branch: peak is at the last data point")
 
-    window = smoothing_window if smoothing_window is not None else max(5, n // 100)
+    k_e = _cbf_elastic_slope(d[: i_peak + 1], f[: i_peak + 1], f_peak)
 
-    i_y, d_y_data, f_y_data = _detect_yield_point(d, f, i_peak, window, yield_slope_fraction)
-    k_e = _cbf_elastic_slope(d, f, i_y, f_y_data)
-
+    d_max = float(d[-1])
+    search_start_d = d_max * cusum_search_start_fraction
     i_f, i_r = _detect_fracture_region(
-        d, f, d_y_data, cusum_threshold, cusum_drift, cusum_search_start_factor,
+        d, f, search_start_d, cusum_threshold, cusum_drift,
     )
 
     d_f, f_f = float(d[i_f]), float(f[i_f])
     d_r, f_r = float(d[i_r]), float(f[i_r])
-    d_max = float(d[-1])
+    k_drop = (f_r - f_f) / max(d_r - d_f, 1e-9)
 
-    _k_pb, d_y, f_y, d_joint, f_joint = _fit_post_buckling(d, f, d_f, f_f, k_e)
-
-    _k_r, f_end = _fit_residual(d, f, d_r, f_r)
+    _k_pb, d_y, f_y, d_joint, f_joint = _fit_post_buckling(
+        d, f, d_f, f_f, d_r, k_drop, k_e,
+    )
+    _k_r, d_r2, f_r2, f_end = _fit_residual(
+        d, f, d_f, f_f, k_drop, d_r, d_max,
+    )
 
     return np.asarray(
-        [[0.0, 0.0], [d_y, f_y], [d_joint, f_joint], [d_r, f_r], [d_max, f_end]],
+        [[0.0, 0.0], [d_y, f_y], [d_joint, f_joint], [d_r2, f_r2], [d_max, f_end]],
         dtype=np.float64,
     )
 
@@ -90,48 +88,10 @@ def fit_cbf_backbone(
 # ---------------------------------------------------------------------------
 
 
-def _detect_yield_point(
-    d: FloatArr, f: FloatArr, i_peak: int, window: int, yield_slope_fraction: float
-) -> tuple[int, float, float]:
-    """Find the yield/buckling kink on the ascending branch.
-
-    Returns (global_index, d_y, f_y). Falls back to the peak if no kink is found.
-    """
-    n_asc = i_peak + 1
-    if n_asc < 4:
-        return i_peak, float(d[i_peak]), float(f[i_peak])
-
-    d_asc = d[:n_asc]
-    f_asc = f[:n_asc]
-
-    f_smooth = uniform_filter1d(f_asc.astype(np.float64), size=window)
-
-    dd = np.diff(d_asc)
-    dd = np.where(dd <= 0.0, 1e-12, dd)
-    slopes = np.diff(f_smooth) / dd
-
-    # Use the first n_init samples to estimate k_init.  Start the search only
-    # AFTER n_init to avoid false triggers from smoothing boundary artefacts
-    # (the reflected padding near index 0 can inflate f_smooth[0], making the
-    # very first slope look artificially small).
-    n_init = max(3, n_asc // 20)
-    k_init = float(np.median(slopes[:n_init]))
-    if k_init <= 0.0:
-        return i_peak, float(d[i_peak]), float(f[i_peak])
-
-    threshold = yield_slope_fraction * k_init
-
-    for i in range(n_init, len(slopes)):
-        if float(slopes[i]) < threshold:
-            return i, float(d_asc[i]), float(f_asc[i])
-
-    return i_peak, float(d[i_peak]), float(f[i_peak])
-
-
-def _cbf_elastic_slope(d: FloatArr, f: FloatArr, i_y: int, f_y: float) -> float:
-    """Secant stiffness at 10 % of the detected yield force."""
-    f_ref = _ELASTIC_REF_FRACTION * f_y
-    d_ref = float(np.interp(f_ref, f[: i_y + 1], d[: i_y + 1]))
+def _cbf_elastic_slope(d_asc: FloatArr, f_asc: FloatArr, f_peak: float) -> float:
+    """Secant stiffness at 10 % of peak force, mirroring fitting._elastic_slope."""
+    f_ref = _ELASTIC_REF_FRACTION * f_peak
+    d_ref = float(np.interp(f_ref, f_asc, d_asc))
     if d_ref <= 0.0:
         raise ValueError("Elastic reference displacement <= 0")
     return f_ref / d_ref
@@ -140,21 +100,18 @@ def _cbf_elastic_slope(d: FloatArr, f: FloatArr, i_y: int, f_y: float) -> float:
 def _detect_fracture_region(
     d: FloatArr,
     f: FloatArr,
-    d_y: float,
+    search_start_d: float,
     cusum_threshold: float,
     cusum_drift: float,
-    search_start_factor: float,
 ) -> tuple[int, int]:
     """Locate fracture endpoints via CUSUM on standardised velocity.
 
     Returns global indices (i_f, i_r) bounding the fracture event.
     """
-    d_search_start = d_y * search_start_factor
-    matches = np.flatnonzero(d >= d_search_start)
+    matches = np.flatnonzero(d >= search_start_d)
     if matches.size == 0:
         raise ValueError(
-            f"CUSUM search start d_y*{search_start_factor} = {d_search_start:.4g} "
-            f"exceeds d_max = {float(d[-1]):.4g}"
+            f"CUSUM search start {search_start_d:.4g} exceeds d_max = {float(d[-1]):.4g}"
         )
     i_start = int(matches[0])
 
@@ -204,32 +161,37 @@ def _area_error(d: FloatArr, f_exact: FloatArr, f_fit: FloatArr) -> float:
     return float(np.trapezoid(np.abs(f_exact - f_fit), d))
 
 
-def _fit_post_buckling(
-    d: FloatArr, f: FloatArr, d_f: float, f_f: float, k_e: float
-) -> tuple[float, float, float, float, float]:
-    """Post-buckling line pinned at (d_f, f_f); 1-D optimisation over slope k_pb."""
-    k_pb_min = -abs(f_f) / max(d_f, 1e-9) * 10.0
-    # Cap upper bound so d_y > 0 is guaranteed across the entire search domain.
-    # d_y = (f_f - k_pb*d_f)/(k_e - k_pb) > 0  ⟺  k_pb < f_f/d_f (denom always > 0).
-    k_pb_max = min(k_e * 0.999, f_f / max(d_f, 1e-9) * 0.999)
+def _fit_kpb_at(
+    d: FloatArr,
+    f: FloatArr,
+    d_joint: float,
+    f_joint: float,
+    k_e: float,
+) -> tuple[float, float, float, float]:
+    """Inner: 1-D Brent over k_pb, post-buckling line pinned at (d_joint, f_joint).
+
+    Returns (k_pb, d_y, f_y, area_err).
+    """
+    k_pb_min = -abs(f_joint) / max(d_joint, 1e-9) * 10.0
+    # Geometric upper bound: d_y > 0 requires k_pb < f_joint / d_joint.
+    k_pb_max = min(k_e * 0.999, f_joint / max(d_joint, 1e-9) * 0.999)
 
     def obj(k_pb: float) -> float:
         denom = k_e - k_pb
         if denom <= 0.0:
             return 1e18
-        d_y = (f_f - k_pb * d_f) / denom
-        if d_y <= 0.0 or d_y >= d_f:
+        d_y = (f_joint - k_pb * d_joint) / denom
+        if d_y <= 0.0 or d_y >= d_joint:
             return 1e18
-        mask = (d >= d_y) & (d <= d_f)
+        mask = (d >= d_y) & (d <= d_joint)
         if not bool(mask.any()):
             return 1e18
-        return _area_error(d[mask], f[mask], f_f + k_pb * (d[mask] - d_f))
+        return _area_error(d[mask], f[mask], f_joint + k_pb * (d[mask] - d_joint))
 
     if k_pb_max <= k_pb_min:
-        # Degenerate: f_f is so low relative to d_f that no valid post-buckling slope exists.
         k_pb = 0.0
-        d_y = f_f / max(k_e, 1e-9)
-        return k_pb, d_y, k_e * d_y, d_f, f_f
+        d_y = f_joint / max(k_e, 1e-9)
+        return k_pb, d_y, k_e * d_y, _segment_area(d, f, d_y, d_joint, f_joint, k_pb)
 
     res = minimize_scalar(obj, bounds=(k_pb_min, k_pb_max), method="bounded")
     k_pb = float(res.x)
@@ -237,31 +199,121 @@ def _fit_post_buckling(
     if denom <= 0.0:
         k_pb = 0.0
         denom = k_e
-    d_y = (f_f - k_pb * d_f) / denom
+    d_y = (f_joint - k_pb * d_joint) / denom
     if d_y <= 0.0:
-        d_y = f_f / max(k_e, 1e-9)
+        d_y = f_joint / max(k_e, 1e-9)
         k_pb = 0.0
     f_y = k_e * d_y
-    return k_pb, d_y, f_y, d_f, f_f
+    return k_pb, d_y, f_y, _segment_area(d, f, d_y, d_joint, f_joint, k_pb)
 
 
-def _fit_residual(
-    d: FloatArr, f: FloatArr, d_r: float, f_r: float
-) -> tuple[float, float]:
-    """Residual line pinned at (d_r, f_r); 1-D optimisation with slope ≤ 0."""
-    d_max = float(d[-1])
-    span = d_max - d_r
+def _segment_area(
+    d: FloatArr,
+    f: FloatArr,
+    d_y: float,
+    d_joint: float,
+    f_joint: float,
+    k_pb: float,
+) -> float:
+    mask = (d >= d_y) & (d <= d_joint)
+    if not bool(mask.any()):
+        return 1e18
+    return _area_error(d[mask], f[mask], f_joint + k_pb * (d[mask] - d_joint))
+
+
+def _fit_post_buckling(
+    d: FloatArr,
+    f: FloatArr,
+    d_f: float,
+    f_f: float,
+    d_r: float,
+    k_drop: float,
+    k_e: float,
+) -> tuple[float, float, float, float, float]:
+    """Slide d_joint along the drop line; inner k_pb pinned at (d_joint, f_joint).
+
+    Returns (k_pb, d_y, f_y, d_joint, f_joint).
+    """
+    if d_r <= d_f:
+        f_joint = f_f
+        d_joint = d_f
+        k_pb, d_y, f_y, _ = _fit_kpb_at(d, f, d_joint, f_joint, k_e)
+        return k_pb, d_y, f_y, d_joint, f_joint
+
+    def outer_obj(d_joint: float) -> float:
+        f_joint = f_f + k_drop * (d_joint - d_f)
+        return _fit_kpb_at(d, f, d_joint, f_joint, k_e)[3]
+
+    res = minimize_scalar(outer_obj, bounds=(d_f, d_r), method="bounded")
+    d_joint = float(res.x)
+    f_joint = f_f + k_drop * (d_joint - d_f)
+    k_pb, d_y, f_y, _ = _fit_kpb_at(d, f, d_joint, f_joint, k_e)
+    return k_pb, d_y, f_y, d_joint, f_joint
+
+
+def _fit_kr_at(
+    d: FloatArr,
+    f: FloatArr,
+    d_r2: float,
+    f_r2: float,
+    d_max: float,
+) -> tuple[float, float, float]:
+    """Inner: 1-D Brent over k_r ≤ 0, residual line pinned at (d_r2, f_r2).
+
+    Returns (k_r, f_end, area_err).
+    """
+    span = d_max - d_r2
     if span < 1e-9:
-        return 0.0, f_r
+        return 0.0, f_r2, 0.0
 
-    k_r_min = -f_r / span * 2.0
+    k_r_min = -f_r2 / span * 2.0
 
     def obj(k_r: float) -> float:
-        mask = d >= d_r
+        mask = d >= d_r2
         if not bool(mask.any()):
             return 1e18
-        return _area_error(d[mask], f[mask], f_r + k_r * (d[mask] - d_r))
+        return _area_error(d[mask], f[mask], f_r2 + k_r * (d[mask] - d_r2))
 
     res = minimize_scalar(obj, bounds=(k_r_min, 0.0), method="bounded")
     k_r = float(res.x)
-    return k_r, f_r + k_r * span
+    return k_r, f_r2 + k_r * span, float(res.fun)
+
+
+def _fit_residual(
+    d: FloatArr,
+    f: FloatArr,
+    d_f: float,
+    f_f: float,
+    k_drop: float,
+    d_r: float,
+    d_max: float,
+) -> tuple[float, float, float, float]:
+    """Slide d_r2 along the drop line; inner k_r ≤ 0 pinned at (d_r2, f_r2).
+
+    Returns (k_r, d_r2, f_r2, f_end).
+    """
+    # Upper bound for d_r2: cap where the drop line crosses zero so the inner
+    # residual fit always sees f_r2 > 0.
+    if k_drop < 0.0:
+        d_zero = d_f - f_f / k_drop
+        d_r2_max = min(d_max, d_zero)
+    else:
+        d_r2_max = d_max
+
+    if d_r2_max <= d_r + 1e-9:
+        d_r2 = d_r
+        f_r2 = f_f + k_drop * (d_r2 - d_f)
+        if d_max <= d_r2:
+            return 0.0, d_r2, f_r2, f_r2
+        k_r, f_end, _ = _fit_kr_at(d, f, d_r2, f_r2, d_max)
+        return k_r, d_r2, f_r2, f_end
+
+    def outer_obj(d_r2: float) -> float:
+        f_r2 = f_f + k_drop * (d_r2 - d_f)
+        return _fit_kr_at(d, f, d_r2, f_r2, d_max)[2]
+
+    res = minimize_scalar(outer_obj, bounds=(d_r, d_r2_max), method="bounded")
+    d_r2 = float(res.x)
+    f_r2 = f_f + k_drop * (d_r2 - d_f)
+    k_r, f_end, _ = _fit_kr_at(d, f, d_r2, f_r2, d_max)
+    return k_r, d_r2, f_r2, f_end
