@@ -301,7 +301,7 @@ def _fit_residual(
     def outer_obj(f_r2: float) -> float:
         return _fit_kr_at(d, f, d_r, f_r2, d_max)[2]
 
-    res = minimize_scalar(outer_obj, bounds=(1e-6, f_r - 1e-6), method="bounded")
+    res = minimize_scalar(outer_obj, bounds=(1e-6, 2 * f_r), method="bounded")
     f_r2 = float(res.x)
     k_r, f_end, _ = _fit_kr_at(d, f, d_r, f_r2, d_max)
     return k_r, d_r, f_r2, f_end
