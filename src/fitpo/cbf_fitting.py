@@ -68,14 +68,11 @@ def fit_cbf_backbone(
 
     d_f, f_f = float(d[i_f]), float(f[i_f])
     d_r, f_r = float(d[i_r]), float(f[i_r])
-    k_drop = (f_r - f_f) / max(d_r - d_f, 1e-9)
 
     _k_pb, d_y, f_y, d_joint, f_joint = _fit_post_buckling(
-        d, f, d_f, f_f, d_r, k_drop, k_e,
+        d, f, d_f, f_f, d_r, f_r, k_e, f_peak,
     )
-    _k_r, d_r2, f_r2, f_end = _fit_residual(
-        d, f, d_f, f_f, k_drop, d_r, d_max,
-    )
+    _k_r, d_r2, f_r2, f_end = _fit_residual(d, f, d_r, f_r, d_max)
 
     return np.asarray(
         [[0.0, 0.0], [d_y, f_y], [d_joint, f_joint], [d_r2, f_r2], [d_max, f_end]],
@@ -227,28 +224,35 @@ def _fit_post_buckling(
     d_f: float,
     f_f: float,
     d_r: float,
-    k_drop: float,
+    f_r: float,
     k_e: float,
+    f_peak: float,
 ) -> tuple[float, float, float, float, float]:
-    """Slide d_joint along the drop line; inner k_pb pinned at (d_joint, f_joint).
+    """Free f_joint fitting; d_joint = d_f fixed.
 
-    Returns (k_pb, d_y, f_y, d_joint, f_joint).
+    Outer Brent over f_joint in (f_r, 1.5*f_peak); minimises combined
+    segment-2 + segment-3 absolute area error.
+
+    Returns (k_pb, d_y, f_y, d_joint=d_f, f_joint).
     """
-    if d_r <= d_f:
-        f_joint = f_f
-        d_joint = d_f
-        k_pb, d_y, f_y, _ = _fit_kpb_at(d, f, d_joint, f_joint, k_e)
-        return k_pb, d_y, f_y, d_joint, f_joint
+    f_joint_max = 1.5 * f_peak
+    f_joint_min = f_r + 1e-6
 
-    def outer_obj(d_joint: float) -> float:
-        f_joint = f_f + k_drop * (d_joint - d_f)
-        return _fit_kpb_at(d, f, d_joint, f_joint, k_e)[3]
+    if f_joint_min >= f_joint_max:
+        k_pb, d_y, f_y, _ = _fit_kpb_at(d, f, d_f, f_r, k_e)
+        return k_pb, d_y, f_y, d_f, f_r
 
-    res = minimize_scalar(outer_obj, bounds=(d_f, d_r), method="bounded")
-    d_joint = float(res.x)
-    f_joint = f_f + k_drop * (d_joint - d_f)
-    k_pb, d_y, f_y, _ = _fit_kpb_at(d, f, d_joint, f_joint, k_e)
-    return k_pb, d_y, f_y, d_joint, f_joint
+    def outer_obj(f_joint: float) -> float:
+        k3 = (f_r - f_joint) / max(d_r - d_f, 1e-9)
+        k_pb, _d_y, _f_y, area2 = _fit_kpb_at(d, f, d_f, f_joint, k_e)
+        mask = (d >= d_f) & (d <= d_r)
+        area3 = _area_error(d[mask], f[mask], f_joint + k3 * (d[mask] - d_f)) if bool(mask.any()) else 0.0
+        return area2 + area3
+
+    res = minimize_scalar(outer_obj, bounds=(f_joint_min, f_joint_max), method="bounded")
+    f_joint = float(res.x)
+    k_pb, d_y, f_y, _ = _fit_kpb_at(d, f, d_f, f_joint, k_e)
+    return k_pb, d_y, f_y, d_f, f_joint
 
 
 def _fit_kr_at(
@@ -282,38 +286,22 @@ def _fit_kr_at(
 def _fit_residual(
     d: FloatArr,
     f: FloatArr,
-    d_f: float,
-    f_f: float,
-    k_drop: float,
     d_r: float,
+    f_r: float,
     d_max: float,
 ) -> tuple[float, float, float, float]:
-    """Slide d_r2 along the drop line; inner k_r ≤ 0 pinned at (d_r2, f_r2).
+    """Vertical sliding: d_r2 = d_r fixed, f_r2 free in (1e-6, f_r).
 
-    Returns (k_r, d_r2, f_r2, f_end).
+    Outer Brent over f_r2; inner k_r <= 0 from _fit_kr_at.
+    Returns (k_r, d_r2=d_r, f_r2, f_end).
     """
-    # Upper bound for d_r2: cap where the drop line crosses zero so the inner
-    # residual fit always sees f_r2 > 0.
-    if k_drop < 0.0:
-        d_zero = d_f - f_f / k_drop
-        d_r2_max = min(d_max, d_zero)
-    else:
-        d_r2_max = d_max
+    if f_r <= 1e-6 or d_max <= d_r + 1e-9:
+        return 0.0, d_r, f_r, f_r
 
-    if d_r2_max <= d_r + 1e-9:
-        d_r2 = d_r
-        f_r2 = f_f + k_drop * (d_r2 - d_f)
-        if d_max <= d_r2:
-            return 0.0, d_r2, f_r2, f_r2
-        k_r, f_end, _ = _fit_kr_at(d, f, d_r2, f_r2, d_max)
-        return k_r, d_r2, f_r2, f_end
+    def outer_obj(f_r2: float) -> float:
+        return _fit_kr_at(d, f, d_r, f_r2, d_max)[2]
 
-    def outer_obj(d_r2: float) -> float:
-        f_r2 = f_f + k_drop * (d_r2 - d_f)
-        return _fit_kr_at(d, f, d_r2, f_r2, d_max)[2]
-
-    res = minimize_scalar(outer_obj, bounds=(d_r, d_r2_max), method="bounded")
-    d_r2 = float(res.x)
-    f_r2 = f_f + k_drop * (d_r2 - d_f)
-    k_r, f_end, _ = _fit_kr_at(d, f, d_r2, f_r2, d_max)
-    return k_r, d_r2, f_r2, f_end
+    res = minimize_scalar(outer_obj, bounds=(1e-6, f_r - 1e-6), method="bounded")
+    f_r2 = float(res.x)
+    k_r, f_end, _ = _fit_kr_at(d, f, d_r, f_r2, d_max)
+    return k_r, d_r, f_r2, f_end
