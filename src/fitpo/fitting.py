@@ -8,7 +8,7 @@ import numpy as np
 import numpy.typing as npt
 from scipy.optimize import minimize, minimize_scalar
 
-Mode = Literal["bilinear", "trilinear", "quadrilinear"]
+Mode = Literal["bilinear", "bilinear_incl_neg_stiffness", "trilinear", "quadrilinear"]
 FloatArr = npt.NDArray[np.float64]
 
 ELASTIC_REF_FRACTION = 0.10
@@ -30,7 +30,10 @@ def fit_piecewise_backbone(
         Shape (N, 2): col 0 displacement (monotone, from 0), col 1 force.
     mode
         None (default) = auto trilinear or quadrilinear per rule-3 test.
-        Otherwise force bilinear / trilinear / quadrilinear.
+        Otherwise force bilinear / bilinear_incl_neg_stiffness / trilinear /
+        quadrilinear. ``bilinear_incl_neg_stiffness`` anchors segment 2 to the
+        last data point, or to the zero-force crossing when the curve dips
+        negative.
 
     Returns
     -------
@@ -54,6 +57,9 @@ def fit_piecewise_backbone(
 
     if mode == "bilinear":
         return _fit_bilinear(d, f, d_peak, f_peak, k_e, i_peak)
+
+    if mode == "bilinear_incl_neg_stiffness":
+        return _fit_bilinear_incl_neg_stiffness(d, f, f_peak, k_e)
 
     if i_peak >= len(f) - 1:
         raise ValueError("No descending branch: peak is at the last data point")
@@ -155,6 +161,44 @@ def _fit_bilinear(
     f_y = float(res.x)
     d_y = f_y / k_e
     return np.asarray([[0.0, 0.0], [d_y, f_y], [d_end, f_end]], dtype=np.float64)
+
+
+def _ultimate_point(d: FloatArr, f: FloatArr) -> tuple[float, float]:
+    if f[-1] >= 0.0:
+        return float(d[-1]), float(f[-1])
+    sign = f >= 0.0
+    transitions = np.flatnonzero(sign[:-1] & ~sign[1:])
+    if transitions.size == 0:
+        raise ValueError("Cannot locate zero-force crossing for ultimate point")
+    i = int(transitions[-1])
+    d_u = float(d[i] + (0.0 - f[i]) / (f[i + 1] - f[i]) * (d[i + 1] - d[i]))
+    return d_u, 0.0
+
+
+def _fit_bilinear_incl_neg_stiffness(
+    d: FloatArr, f: FloatArr, f_peak: float, k_e: float
+) -> FloatArr:
+    d_u, f_u = _ultimate_point(d, f)
+
+    def obj(f_y: float) -> float:
+        d_y = f_y / k_e
+        if d_y <= 0.0 or d_y >= d_u:
+            return 1e18
+        mask = (d > d_y) & (d < d_u)
+        d_inner = d[mask]
+        f_inner = f[mask]
+        d_grid = np.concatenate(([d_y], d_inner, [d_u]))
+        f_exact_grid = np.concatenate(
+            ([float(np.interp(d_y, d, f))], f_inner, [f_u])
+        )
+        slope = (f_u - f_y) / (d_u - d_y)
+        f_fit_grid = f_y + slope * (d_grid - d_y)
+        return _area_error(d_grid, f_exact_grid, f_fit_grid)
+
+    res = minimize_scalar(obj, bounds=(1e-9, 2.0 * f_peak), method="bounded")
+    f_y = float(res.x)
+    d_y = f_y / k_e
+    return np.asarray([[0.0, 0.0], [d_y, f_y], [d_u, f_u]], dtype=np.float64)
 
 
 def _fit_hardening(
