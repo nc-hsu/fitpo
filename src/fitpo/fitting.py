@@ -53,7 +53,7 @@ def fit_piecewise_backbone(
     if f_peak <= 0.0:
         raise ValueError("Peak force must be positive")
 
-    k_e = _elastic_slope(d[: i_peak + 1], f[: i_peak + 1], f_peak)
+    k_e = elastic_slope(d[: i_peak + 1], f[: i_peak + 1], f_peak)
 
     if mode == "bilinear":
         return _fit_bilinear(d, f, d_peak, f_peak, k_e, i_peak)
@@ -113,7 +113,8 @@ def fit_piecewise_backbone(
     )
 
 
-def _elastic_slope(d_asc: FloatArr, f_asc: FloatArr, f_peak: float) -> float:
+def elastic_slope(d_asc: FloatArr, f_asc: FloatArr, f_peak: float) -> float:
+    """Secant stiffness at 10 % of peak force on the ascending branch."""
     f_ref = ELASTIC_REF_FRACTION * f_peak
     d_ref = float(np.interp(f_ref, f_asc, d_asc))
     if d_ref <= 0.0:

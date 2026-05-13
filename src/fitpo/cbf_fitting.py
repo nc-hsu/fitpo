@@ -6,9 +6,9 @@ import numpy as np
 import numpy.typing as npt
 from scipy.optimize import minimize_scalar
 
-FloatArr = npt.NDArray[np.float64]
+from fitpo.fitting import elastic_slope
 
-_ELASTIC_REF_FRACTION = 0.10
+FloatArr = npt.NDArray[np.float64]
 
 
 def fit_cbf_backbone(
@@ -58,7 +58,7 @@ def fit_cbf_backbone(
     if i_peak >= n - 1:
         raise ValueError("No descending branch: peak is at the last data point")
 
-    k_e = _cbf_elastic_slope(d[: i_peak + 1], f[: i_peak + 1], f_peak)
+    k_e = elastic_slope(d[: i_peak + 1], f[: i_peak + 1], f_peak)
 
     d_max = float(d[-1])
     search_start_d = d_max * cusum_search_start_fraction
@@ -83,15 +83,6 @@ def fit_cbf_backbone(
 # ---------------------------------------------------------------------------
 # Detection helpers
 # ---------------------------------------------------------------------------
-
-
-def _cbf_elastic_slope(d_asc: FloatArr, f_asc: FloatArr, f_peak: float) -> float:
-    """Secant stiffness at 10 % of peak force, mirroring fitting._elastic_slope."""
-    f_ref = _ELASTIC_REF_FRACTION * f_peak
-    d_ref = float(np.interp(f_ref, f_asc, d_asc))
-    if d_ref <= 0.0:
-        raise ValueError("Elastic reference displacement <= 0")
-    return f_ref / d_ref
 
 
 def _detect_fracture_region(
