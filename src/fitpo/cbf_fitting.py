@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import numpy as np
 import numpy.typing as npt
-from scipy.optimize import minimize_scalar
+from scipy.optimize import minimize, minimize_scalar
 
 from fitpo.fitting import elastic_slope
 
@@ -80,9 +80,110 @@ def fit_cbf_backbone(
     )
 
 
+def fit_tetralinear_backbone(
+    pushover: npt.ArrayLike,
+    *,
+    joint_force_fraction: float = 0.80,
+    residual_force_fraction: float = 0.05,
+    collapse_residual: bool = False,
+) -> FloatArr:
+    """Fit a tetralinear backbone by joint-area minimisation.
+
+    Segments: elastic (0 -> y), post-yield decline (y -> f), cliff
+    (f -> r), and a horizontal residual (r -> max). ``d_f`` and ``d_r``
+    are snapped to data points near the descending crossings of
+    ``joint_force_fraction * f_peak`` and ``residual_force_fraction *
+    f_peak`` respectively. ``f_y``, ``f_f`` and ``f_r`` are obtained by
+    jointly minimising the absolute area between segments 2-4 and the
+    data over ``[d_y, d_max]``.
+
+    Parameters
+    ----------
+    pushover
+        Shape (N, 2): col 0 displacement (monotone), col 1 force.
+    joint_force_fraction
+        Target for ``d_f`` is ``fraction * f_peak``; default 0.80.
+    residual_force_fraction
+        Target for ``d_r`` is ``fraction * f_peak``; default 0.05.
+        Must satisfy ``0 < residual_force_fraction < joint_force_fraction < 1``.
+    collapse_residual
+        If True, segment 3 is extended with its own slope down to
+        ``f = 0`` and segment 4 is dropped (trilinear shape, padded to
+        5x2 by repeating the endpoint).
+
+    Returns
+    -------
+    (5, 2) float64 ndarray of breakpoints:
+    Default: ``[[0, 0], [d_y, f_y], [d_f, f_f], [d_r, f_r], [d_max, f_r]]``.
+    Collapse: ``[[0, 0], [d_y, f_y], [d_f, f_f], [d_zero, 0], [d_zero, 0]]``.
+    """
+    arr = np.asarray(pushover, dtype=np.float64)
+    if arr.ndim != 2 or arr.shape[1] != 2:
+        raise ValueError(f"pushover must be shape (N, 2); got {arr.shape}")
+    if arr.shape[0] < 5:
+        raise ValueError("pushover must have at least 5 points")
+    if not 0.0 < residual_force_fraction < joint_force_fraction < 1.0:
+        raise ValueError(
+            "Require 0 < residual_force_fraction < joint_force_fraction < 1"
+        )
+
+    d: FloatArr = arr[:, 0]
+    f: FloatArr = arr[:, 1]
+    n = len(d)
+
+    i_peak = int(np.argmax(f))
+    f_peak = float(f[i_peak])
+    if f_peak <= 0.0:
+        raise ValueError("Peak force must be positive")
+    if i_peak >= n - 1:
+        raise ValueError("No descending branch: peak is at the last data point")
+
+    k_e = elastic_slope(d[: i_peak + 1], f[: i_peak + 1], f_peak)
+
+    i_f = _snap_descending_crossing(f, i_peak, joint_force_fraction * f_peak)
+    if i_f is None:
+        raise ValueError(
+            "No descending crossing of joint_force_fraction * f_peak"
+        )
+    i_r = _snap_descending_crossing(f, i_f, residual_force_fraction * f_peak)
+    if i_r is None:
+        i_r = n - 1
+    if i_f >= i_r:
+        raise ValueError("d_f must precede d_r; choose different fractions")
+
+    d_f = float(d[i_f])
+    d_r = float(d[i_r])
+    d_max = float(d[-1])
+
+    return _fit_tetra_free(
+        d, f, k_e, d_f, d_r, d_max, f_peak,
+        f_f_init=float(f[i_f]),
+        f_r_init=float(f[i_r]),
+        collapse_residual=collapse_residual,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Detection helpers
 # ---------------------------------------------------------------------------
+
+
+def _snap_descending_crossing(
+    f: FloatArr, i_start: int, target: float,
+) -> int | None:
+    """Snap to the data point nearest the descending crossing of ``target``.
+
+    Walks from ``i_start + 1`` until the first index ``i`` with
+    ``f[i] <= target``. Returns whichever of ``{i - 1, i}`` has ``f``
+    closer to ``target``. Returns ``None`` if no descending crossing
+    exists past ``i_start``.
+    """
+    after = f[i_start + 1 :]
+    below = np.flatnonzero(after <= target)
+    if below.size == 0:
+        return None
+    i_cross = int(below[0]) + i_start + 1
+    return i_cross - 1 if abs(f[i_cross - 1] - target) <= abs(f[i_cross] - target) else i_cross
 
 
 def _detect_fracture_region(
@@ -296,3 +397,89 @@ def _fit_residual(
     f_r2 = float(res.x)
     k_r, f_end, _ = _fit_kr_at(d, f, d_r, f_r2, d_max)
     return k_r, d_r, f_r2, f_end
+
+
+def _fit_tetra_free(
+    d: FloatArr,
+    f: FloatArr,
+    k_e: float,
+    d_f: float,
+    d_r: float,
+    d_max: float,
+    f_peak: float,
+    *,
+    f_f_init: float,
+    f_r_init: float,
+    collapse_residual: bool,
+) -> FloatArr:
+    """Joint L-BFGS-B over (f_y, f_f, f_r); returns 5x2 breakpoints."""
+    upper = 1.5 * f_peak
+    penalty = 1e3 * f_peak * max(d_max, 1.0)
+
+    def piecewise_fit(d_grid: FloatArr, d_y: float, f_y: float,
+                      f_f: float, f_r: float) -> FloatArr:
+        xs = np.asarray([d_y, d_f, d_r, d_max], dtype=np.float64)
+        ys = np.asarray([f_y, f_f, f_r, f_r], dtype=np.float64)
+        return np.interp(d_grid, xs, ys)
+
+    def piecewise_fit_collapse(d_grid: FloatArr, d_y: float, f_y: float,
+                               f_f: float, f_r: float) -> tuple[FloatArr, float]:
+        k3 = (f_r - f_f) / (d_r - d_f)
+        d_zero = d_f - f_f / k3  # k3 < 0 guaranteed by caller
+        d_end = max(d_max, d_zero)
+        xs = np.asarray([d_y, d_f, d_zero, d_end], dtype=np.float64)
+        ys = np.asarray([f_y, f_f, 0.0, 0.0], dtype=np.float64)
+        return np.interp(d_grid, xs, ys), d_zero
+
+    def objective(x: FloatArr) -> float:
+        f_y, f_f, f_r = float(x[0]), float(x[1]), float(x[2])
+        d_y = f_y / k_e
+        pen = 0.0
+        if d_y <= 0.0 or d_y >= d_f:
+            pen += penalty
+        if f_r > f_f:
+            pen += penalty * (f_r - f_f) / max(f_peak, 1e-9)
+        if collapse_residual:
+            k3 = (f_r - f_f) / (d_r - d_f)
+            if k3 >= -1e-12:
+                return penalty
+            d_y_eff = max(d_y, 1e-6)
+            d_zero = d_f - f_f / k3
+            d_end = max(d_max, d_zero)
+            d_data = d[d >= d_y_eff]
+            grid = np.unique(np.concatenate(
+                ([d_y_eff], d_data, [d_f, d_zero, d_end])
+            ))
+            f_data = np.interp(grid, d, f)
+            f_fit, _ = piecewise_fit_collapse(grid, d_y_eff, f_y, f_f, f_r)
+            return _area_error(grid, f_data, f_fit) + pen
+        d_y_eff = max(d_y, 1e-6)
+        d_data = d[d >= d_y_eff]
+        grid = np.unique(np.concatenate(([d_y_eff], d_data, [d_f, d_r, d_max])))
+        f_data = np.interp(grid, d, f)
+        f_fit = piecewise_fit(grid, d_y_eff, f_y, f_f, f_r)
+        return _area_error(grid, f_data, f_fit) + pen
+
+    x0 = np.asarray(
+        [min(f_peak, upper), min(max(f_f_init, 1e-6), upper),
+         min(max(f_r_init, 1e-6), upper)],
+        dtype=np.float64,
+    )
+    bounds = [(1e-6, upper)] * 3
+    res = minimize(objective, x0=x0, bounds=bounds, method="L-BFGS-B")
+    f_y, f_f, f_r = float(res.x[0]), float(res.x[1]), float(res.x[2])
+    d_y = f_y / k_e
+
+    if collapse_residual:
+        k3 = (f_r - f_f) / (d_r - d_f)
+        if k3 >= 0.0:
+            k3 = -1e-12
+        d_zero = d_f - f_f / k3
+        return np.asarray(
+            [[0.0, 0.0], [d_y, f_y], [d_f, f_f], [d_zero, 0.0], [d_zero, 0.0]],
+            dtype=np.float64,
+        )
+    return np.asarray(
+        [[0.0, 0.0], [d_y, f_y], [d_f, f_f], [d_r, f_r], [d_max, f_r]],
+        dtype=np.float64,
+    )
