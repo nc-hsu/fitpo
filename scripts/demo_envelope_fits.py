@@ -22,6 +22,15 @@ from fitpo import fit_envelope  # noqa: E402
 
 CURVES_DIR = REPO_ROOT / "example_cpo_curves"
 
+# (mode, colour, linestyle)
+_MODES = [
+    ("peak-to-peak", "red", "-"),
+    ("loading-front", "darkorange", "--"),
+    ("displacement-bins", "purple", ":"),
+    ("adjusted-peak-to-peak", "seagreen", "-."),
+    ("simplified-loading-front", "magenta", (0, (3, 1, 1, 1))),
+]
+
 _COL_HEADERS = "curve            n_pos   n_neg   d_pos_max   f_pos_max   d_neg_min   f_neg_min"
 
 
@@ -44,19 +53,23 @@ def main() -> None:
         data = np.loadtxt(csv_path, delimiter=",")
         ax.plot(data[:, 0], data[:, 1], color="steelblue", lw=0.4, alpha=0.5, label="cyclic")
         try:
-            pos, neg = fit_envelope(data)
-            ax.plot(pos[:, 0], pos[:, 1], color="red", marker="o", markersize=4, lw=1.5, label="+ envelope")
-            ax.plot(neg[:, 0], neg[:, 1], color="green", marker="o", markersize=4, lw=1.5, label="- envelope")
-            d_pos_max = pos[-1, 0] if pos.shape[0] > 1 else 0.0
-            f_pos_max = float(np.max(pos[:, 1])) if pos.shape[0] > 1 else 0.0
-            d_neg_min = neg[-1, 0] if neg.shape[0] > 1 else 0.0
-            f_neg_min = float(np.min(neg[:, 1])) if neg.shape[0] > 1 else 0.0
-            print(
-                f"{csv_path.stem:<16} "
-                f"{pos.shape[0]:<7d} {neg.shape[0]:<7d} "
-                f"{d_pos_max:<11.3f} {f_pos_max:<11.3g} "
-                f"{d_neg_min:<11.3f} {f_neg_min:<11.3g}"
-            )
+            for mode, colour, ls in _MODES:
+                pos, neg = fit_envelope(data, mode=mode)
+                ax.plot(pos[:, 0], pos[:, 1], color=colour, ls=ls, marker="o",
+                        markersize=3, lw=1.4, label=mode)
+                ax.plot(neg[:, 0], neg[:, 1], color=colour, ls=ls, marker="o",
+                        markersize=3, lw=1.4)
+                if mode == "peak-to-peak":
+                    d_pos_max = pos[-1, 0] if pos.shape[0] > 1 else 0.0
+                    f_pos_max = float(np.max(pos[:, 1])) if pos.shape[0] > 1 else 0.0
+                    d_neg_min = neg[-1, 0] if neg.shape[0] > 1 else 0.0
+                    f_neg_min = float(np.min(neg[:, 1])) if neg.shape[0] > 1 else 0.0
+                    print(
+                        f"{csv_path.stem:<16} "
+                        f"{pos.shape[0]:<7d} {neg.shape[0]:<7d} "
+                        f"{d_pos_max:<11.3f} {f_pos_max:<11.3g} "
+                        f"{d_neg_min:<11.3f} {f_neg_min:<11.3g}"
+                    )
         except ValueError as e:
             ax.text(0.5, 0.5, f"Error:\n{e}", transform=ax.transAxes,
                     ha="center", va="center", color="red", fontsize=8)
