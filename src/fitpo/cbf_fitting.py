@@ -86,16 +86,33 @@ def fit_tetralinear_backbone(
     joint_force_fraction: float = 0.80,
     residual_force_fraction: float = 0.05,
     collapse_residual: bool = False,
+    d_f: float | None = None,
+    d_r: float | None = None,
 ) -> FloatArr:
     """Fit a tetralinear backbone by joint-area minimisation.
 
     Segments: elastic (0 -> y), post-yield decline (y -> f), cliff
-    (f -> r), and a horizontal residual (r -> max). ``d_f`` and ``d_r``
-    are snapped to data points near the descending crossings of
-    ``joint_force_fraction * f_peak`` and ``residual_force_fraction *
-    f_peak`` respectively. ``f_y``, ``f_f`` and ``f_r`` are obtained by
-    jointly minimising the absolute area between segments 2-4 and the
-    data over ``[d_y, d_max]``.
+    (f -> r), and a horizontal residual (r -> max). ``f_y``, ``f_f`` and
+    ``f_r`` are obtained by jointly minimising the absolute area between
+    segments 2-4 and the data over ``[d_y, d_max]``.
+
+    The two interior knot *displacements* can be set either way:
+
+    - **By force fraction** (default): ``d_f`` and ``d_r`` are snapped to
+      data points near the descending crossings of
+      ``joint_force_fraction * f_peak`` and ``residual_force_fraction *
+      f_peak``.
+    - **By displacement**: pass ``d_f`` and ``d_r`` directly and the
+      snapping is skipped, along with the force fractions.
+
+    The distinction matters when the knots are being *searched over*.
+    Snapping resolves a fraction to "the first data point at or below
+    ``fraction * f_peak``", which is not monotone in the sampling of the
+    curve: inserting extra points along a segment -- which leaves the
+    piecewise-linear curve mathematically unchanged -- can change which
+    point a given fraction resolves to, and so can make the best
+    achievable fit *worse*. Addressing the knots by displacement removes
+    that indirection, so a finer candidate set can only improve the fit.
 
     Parameters
     ----------
@@ -103,26 +120,44 @@ def fit_tetralinear_backbone(
         Shape (N, 2): col 0 displacement (monotone), col 1 force.
     joint_force_fraction
         Target for ``d_f`` is ``fraction * f_peak``; default 0.80.
+        Ignored when ``d_f``/``d_r`` are given.
     residual_force_fraction
         Target for ``d_r`` is ``fraction * f_peak``; default 0.05.
         Must satisfy ``0 < residual_force_fraction < joint_force_fraction < 1``.
+        Ignored when ``d_f``/``d_r`` are given.
     collapse_residual
         If True, segment 3 is extended with its own slope down to
         ``f = 0`` and segment 4 is dropped (trilinear shape, padded to
         5x2 by repeating the endpoint).
+    d_f, d_r
+        Interior knot displacements, in the units of column 0. Give both
+        or neither; they must satisfy ``0 < d_f < d_r <= d_max``. Giving
+        them bypasses the force-fraction snapping entirely.
 
     Returns
     -------
     (5, 2) float64 ndarray of breakpoints:
     Default: ``[[0, 0], [d_y, f_y], [d_f, f_f], [d_r, f_r], [d_max, f_r]]``.
     Collapse: ``[[0, 0], [d_y, f_y], [d_f, f_f], [d_zero, 0], [d_zero, 0]]``.
+
+    Notes
+    -----
+    ``d_y`` is not an independent parameter: it is ``f_y / k_e``, with
+    ``k_e`` the secant stiffness at ``ELASTIC_REF_FRACTION`` of the peak
+    force on the ascending branch. Setting ``d_f``/``d_r`` therefore gives
+    no control over ``d_y``.
     """
+    explicit_knots = d_f is not None or d_r is not None
+    if explicit_knots and (d_f is None or d_r is None):
+        raise ValueError("Give both d_f and d_r, or neither")
+
     arr = np.asarray(pushover, dtype=np.float64)
     if arr.ndim != 2 or arr.shape[1] != 2:
         raise ValueError(f"pushover must be shape (N, 2); got {arr.shape}")
     if arr.shape[0] < 5:
         raise ValueError("pushover must have at least 5 points")
-    if not 0.0 < residual_force_fraction < joint_force_fraction < 1.0:
+    # The fractions are only meaningful on the snapping path.
+    if not explicit_knots and not 0.0 < residual_force_fraction < joint_force_fraction < 1.0:
         raise ValueError(
             "Require 0 < residual_force_fraction < joint_force_fraction < 1"
         )
@@ -139,26 +174,42 @@ def fit_tetralinear_backbone(
         raise ValueError("No descending branch: peak is at the last data point")
 
     k_e = elastic_slope(d[: i_peak + 1], f[: i_peak + 1], f_peak)
-
-    i_f = _snap_descending_crossing(f, i_peak, joint_force_fraction * f_peak)
-    if i_f is None:
-        raise ValueError(
-            "No descending crossing of joint_force_fraction * f_peak"
-        )
-    i_r = _snap_descending_crossing(f, i_f, residual_force_fraction * f_peak)
-    if i_r is None:
-        i_r = n - 1
-    if i_f >= i_r:
-        raise ValueError("d_f must precede d_r; choose different fractions")
-
-    d_f = float(d[i_f])
-    d_r = float(d[i_r])
     d_max = float(d[-1])
+
+    if explicit_knots:
+        # Knots given directly: no snapping, so they need not be data points.
+        # Seed the inner solver from the curve at those displacements, which is
+        # what the snapping path passes from the points it landed on.
+        d_f = float(d_f)
+        d_r = float(d_r)
+        if not 0.0 < d_f < d_r <= d_max:
+            raise ValueError(
+                f"Require 0 < d_f < d_r <= d_max; got d_f={d_f:.6g}, "
+                f"d_r={d_r:.6g}, d_max={d_max:.6g}"
+            )
+        f_f_init = float(np.interp(d_f, d, f))
+        f_r_init = float(np.interp(d_r, d, f))
+    else:
+        i_f = _snap_descending_crossing(f, i_peak, joint_force_fraction * f_peak)
+        if i_f is None:
+            raise ValueError(
+                "No descending crossing of joint_force_fraction * f_peak"
+            )
+        i_r = _snap_descending_crossing(f, i_f, residual_force_fraction * f_peak)
+        if i_r is None:
+            i_r = n - 1
+        if i_f >= i_r:
+            raise ValueError("d_f must precede d_r; choose different fractions")
+
+        d_f = float(d[i_f])
+        d_r = float(d[i_r])
+        f_f_init = float(f[i_f])
+        f_r_init = float(f[i_r])
 
     return _fit_tetra_free(
         d, f, k_e, d_f, d_r, d_max, f_peak,
-        f_f_init=float(f[i_f]),
-        f_r_init=float(f[i_r]),
+        f_f_init=f_f_init,
+        f_r_init=f_r_init,
         collapse_residual=collapse_residual,
     )
 
