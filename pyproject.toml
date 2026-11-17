@@ -1,38 +1,65 @@
+# Build with plain setuptools. >=77 is needed for the SPDX `license` string
+# and `license-files` (PEP 639); `wheel` is no longer a separate requirement.
 [build-system]
-requires = ["setuptools>=68", "wheel"]
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "fitpo"
-version = "0.0.1"
+# The version lives only here; fitpo.__version__ and the docs read it from the
+# installed metadata. It stays below 0.1.0 until the release commit.
+version = "0.1.0.dev0"
 description = "Fit piecewise linear approximations to a nonlinear pushover curve"
 readme = "README.md"
-requires-python = ">=3.10"
-license = { file = "LICENSE" }
+requires-python = ">=3.12"
+license = "GPL-3.0-or-later"
+license-files = ["LICENSE"]
 authors = [{ name = "Nicholas Clemett", email = "nicholas.clemett@hsu-hh.de" }]
 keywords = ["pushover", "piecewise-linear", "structural-engineering", "seismic"]
 classifiers = [
-    "Development Status :: 2 - Pre-Alpha",
+    "Development Status :: 3 - Alpha",
     "Intended Audience :: Science/Research",
-    "License :: OSI Approved :: GNU General Public License v3 (GPLv3)",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.10",
-    "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Operating System :: OS Independent",
     "Topic :: Scientific/Engineering",
+    "Typing :: Typed",
 ]
+# numpy 2.0 is the first release with np.trapezoid; scipy 1.13 is the first
+# built against numpy 2. No upper bounds: add one in a patch release only if a
+# future version actually breaks fitpo.
 dependencies = [
-    "numpy>=1.24",
-    "scipy>=1.11",
-    "matplotlib>=3.7",
+    "numpy>=2.0",
+    "scipy>=1.13",
 ]
 
+[project.optional-dependencies]
+# fitpo never imports matplotlib; it is only for plotting results.
+plot = ["matplotlib>=3.8"]
+test = ["pytest>=8"]
+docs = [
+    "sphinx>=9.1",
+    "myst-nb>=1.4",
+    "furo>=2025.12",
+    "sphinx-copybutton>=0.5.2",
+    "matplotlib>=3.8",
+]
+# Everything needed to develop: tests, docs, lint, type checks and packaging.
+dev = ["fitpo[test,docs]", "ruff", "mypy", "build", "twine"]
+
 [project.urls]
-Repository = "https://github.com/nc-hsu/fitpo"
+Homepage = "https://github.com/nc-hsu/fitpo"
+Source = "https://github.com/nc-hsu/fitpo"
+Documentation = "https://fitpo.readthedocs.io"
+Issues = "https://github.com/nc-hsu/fitpo/issues"
+Changelog = "https://github.com/nc-hsu/fitpo/blob/main/CHANGELOG.md"
 
 [tool.setuptools.packages.find]
 where = ["src"]
 
+# Ship the PEP 561 marker so users' type checkers read fitpo's type hints.
 [tool.setuptools.package-data]
 fitpo = ["py.typed"]
 
@@ -43,14 +70,14 @@ addopts = "-ra --strict-markers"
 
 [tool.ruff]
 line-length = 100
-target-version = "py310"
+target-version = "py312"
 src = ["src", "tests"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM", "NPY"]
 
 [tool.mypy]
-python_version = "3.10"
+python_version = "3.12"
 strict = true
 files = ["src"]
 

@@ -15,7 +15,7 @@ import pytest
 from fitpo import fit_tetralinear_backbone
 from fitpo.cbf_fitting import _snap_descending_crossing
 
-CURVES_DIR = Path(__file__).resolve().parent.parent / "example_po_curves"
+CURVES_DIR = Path(__file__).resolve().parent / "data"
 
 
 # ---------------------------------------------------------------------------

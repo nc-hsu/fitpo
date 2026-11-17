@@ -18,7 +18,7 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
           cache: pip
-      - run: pip install -e . -r requirements-dev.txt
+      - run: pip install -e ".[dev]"
       - run: ruff check .
       - run: mypy
       - run: pytest

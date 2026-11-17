@@ -9,7 +9,7 @@ import pytest
 
 from fitpo import fit_cbf_backbone
 
-CURVES_DIR = Path(__file__).resolve().parent.parent / "example_po_curves"
+CURVES_DIR = Path(__file__).resolve().parent / "data"
 CSV_PATHS = sorted(CURVES_DIR.glob("*.csv"))
 
 
