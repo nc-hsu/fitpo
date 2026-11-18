@@ -1,3 +1,6 @@
+# Continuous integration: lint, type checks, tests, docs and packaging on
+# every push to main and on every pull request. Each job runs the same commands
+# as the local checks described in CONTRIBUTING.md.
 name: CI
 
 on:
@@ -5,20 +8,130 @@ on:
     branches: [main]
   pull_request:
 
+# A newer push to the same branch or pull request cancels the older run.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+# The jobs only read the repository.
+permissions:
+  contents: read
+
 jobs:
   test:
-    runs-on: ubuntu-latest
+    name: test (${{ matrix.os }}, Python ${{ matrix.python-version }})
+    runs-on: ${{ matrix.os }}
     strategy:
+      # Let every combination finish, so one failure does not hide another.
       fail-fast: false
       matrix:
-        python-version: ["3.10", "3.11", "3.12"]
+        # Every supported Python on Linux, and the oldest one on Windows and
+        # macOS to catch platform differences.
+        os: [ubuntu-latest]
+        python-version: ["3.12", "3.13", "3.14"]
+        include:
+          - os: windows-latest
+            python-version: "3.12"
+          - os: macos-latest
+            python-version: "3.12"
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: ${{ matrix.python-version }}
           cache: pip
-      - run: pip install -e ".[dev]"
-      - run: ruff check .
-      - run: mypy
-      - run: pytest
+          cache-dependency-path: pyproject.toml
+      # The dev extra holds the test, lint, type-check and docs tools.
+      - name: Install fitpo and the development tools
+        run: python -m pip install -e ".[dev]"
+      - name: Lint (ruff check)
+        run: ruff check .
+      - name: Formatting (ruff format --check)
+        run: ruff format --check .
+      # mypy reads its file list (src and tests) and settings from pyproject.toml.
+      - name: Type check (mypy)
+        run: mypy
+      # pyproject.toml adds --doctest-modules, so the docstring examples in
+      # src/ run with the tests.
+      - name: Tests and doctests (pytest)
+        run: pytest
+
+  lowest-versions:
+    # The oldest numpy and scipy that pyproject.toml allows, to check that the
+    # lower bounds of the dependencies are true.
+    name: test (lowest numpy and scipy)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+      - name: Install fitpo with numpy 2.0 and scipy 1.13
+        run: python -m pip install "numpy==2.0.*" "scipy==1.13.*" -e ".[test]"
+      - name: Tests and doctests (pytest)
+        run: pytest
+
+  docs:
+    # Builds the documentation as Read the Docs does, executing every example
+    # page; any Sphinx warning (-W), including a broken cross-reference (-n),
+    # fails the job.
+    name: docs
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+      - name: Install fitpo with the docs tools
+        run: python -m pip install ".[docs]"
+      - name: Build the HTML docs
+        run: sphinx-build -W -n -b html docs docs/_build/html
+
+  package:
+    # Builds the sdist and wheel and checks that each works on its own, away
+    # from the repository checkout.
+    name: package
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - name: Install the build tools
+        run: python -m pip install build twine
+      - name: Build the sdist and wheel
+        run: python -m build
+      # --strict also fails on warnings, e.g. a README that PyPI cannot render.
+      - name: Check the package metadata (twine check)
+        run: twine check --strict dist/*
+      # The tests are copied to an empty folder and run there, so `import
+      # fitpo` can only find the installed wheel, not the source in src/. The
+      # docstring examples run from the installed package with --pyargs.
+      - name: Test the installed wheel
+        run: |
+          python -m venv "$RUNNER_TEMP/wheel-venv"
+          PY="$RUNNER_TEMP/wheel-venv/bin/python"
+          "$PY" -m pip install dist/*.whl pytest
+          mkdir "$RUNNER_TEMP/wheel-tests"
+          cp -r tests "$RUNNER_TEMP/wheel-tests/"
+          cd "$RUNNER_TEMP/wheel-tests"
+          "$PY" -c "import fitpo; print('testing', fitpo.__file__)"
+          "$PY" -m pytest tests -p no:cacheprovider
+          "$PY" -m pytest -p no:cacheprovider --doctest-modules --pyargs fitpo \
+            -o doctest_optionflags=NORMALIZE_WHITESPACE
+      # The sdist must hold everything needed to install fitpo and run its
+      # tests. It is unpacked into an empty folder and installed from there
+      # (editable, so the doctests in its src/ import the same copy).
+      - name: Test the unpacked sdist
+        run: |
+          mkdir "$RUNNER_TEMP/sdist"
+          tar -xzf dist/*.tar.gz -C "$RUNNER_TEMP/sdist"
+          cd "$RUNNER_TEMP"/sdist/fitpo-*
+          python -m venv "$RUNNER_TEMP/sdist-venv"
+          PY="$RUNNER_TEMP/sdist-venv/bin/python"
+          "$PY" -m pip install -e ".[test]"
+          "$PY" -m pytest -p no:cacheprovider

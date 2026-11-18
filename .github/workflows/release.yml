@@ -1,0 +1,114 @@
+# Release: on a version tag (e.g. v0.1.0), build and test the package once,
+# publish it to TestPyPI, then to PyPI. Publishing uses trusted publishing
+# (OpenID Connect), so no API token is stored in the repository. Nothing is
+# published until the trusted publishers are set up on TestPyPI and PyPI and the
+# GitHub environments `testpypi` and `pypi` exist.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+# Jobs only read the repository unless they say otherwise.
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: build and test the distributions
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      # The tag must name the version in pyproject.toml exactly (tag v0.1.0 for
+      # version 0.1.0), so a release can never be published under the wrong
+      # number.
+      - name: Check the tag matches the pyproject.toml version
+        run: |
+          python - <<'EOF'
+          import os
+          import sys
+          import tomllib
+
+          with open("pyproject.toml", "rb") as fh:
+              version = tomllib.load(fh)["project"]["version"]
+          tag = os.environ["GITHUB_REF_NAME"]
+          if tag != f"v{version}":
+              sys.exit(f"tag {tag!r} does not match pyproject.toml version {version!r}"
+                       f" (expected tag 'v{version}')")
+          print(f"tag {tag} matches version {version}")
+          EOF
+      - name: Install the build tools
+        run: python -m pip install build twine
+      - name: Build the sdist and wheel
+        run: python -m build
+      - name: Check the package metadata (twine check)
+        run: twine check --strict dist/*
+      # As in the CI package job: run the tests against the installed wheel
+      # from an empty folder, so the source in src/ cannot be imported instead.
+      - name: Test the installed wheel
+        run: |
+          python -m venv "$RUNNER_TEMP/wheel-venv"
+          PY="$RUNNER_TEMP/wheel-venv/bin/python"
+          "$PY" -m pip install dist/*.whl pytest
+          mkdir "$RUNNER_TEMP/wheel-tests"
+          cp -r tests "$RUNNER_TEMP/wheel-tests/"
+          cd "$RUNNER_TEMP/wheel-tests"
+          "$PY" -c "import fitpo; print('testing', fitpo.__file__)"
+          "$PY" -m pytest tests -p no:cacheprovider
+          "$PY" -m pytest -p no:cacheprovider --doctest-modules --pyargs fitpo \
+            -o doctest_optionflags=NORMALIZE_WHITESPACE
+      # The tested files are handed to the publish jobs, so exactly what was
+      # tested is what gets published.
+      - name: Store the distributions
+        uses: actions/upload-artifact@v7
+        with:
+          name: dist
+          path: dist/
+          if-no-files-found: error
+
+  publish-testpypi:
+    name: publish to TestPyPI
+    needs: build
+    runs-on: ubuntu-latest
+    # The GitHub environment that the TestPyPI trusted publisher is tied to.
+    environment:
+      name: testpypi
+      url: https://test.pypi.org/p/fitpo
+    permissions:
+      # Lets the job request the OpenID Connect token that trusted publishing
+      # uses instead of a password.
+      id-token: write
+    steps:
+      - name: Fetch the distributions
+        uses: actions/download-artifact@v8
+        with:
+          name: dist
+          path: dist/
+      - name: Publish to TestPyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          repository-url: https://test.pypi.org/legacy/
+
+  publish-pypi:
+    name: publish to PyPI
+    # Runs only after the TestPyPI upload has succeeded.
+    needs: publish-testpypi
+    runs-on: ubuntu-latest
+    # The GitHub environment that the PyPI trusted publisher is tied to; give
+    # it a required reviewer so every PyPI release waits for approval.
+    environment:
+      name: pypi
+      url: https://pypi.org/p/fitpo
+    permissions:
+      id-token: write
+    steps:
+      - name: Fetch the distributions
+        uses: actions/download-artifact@v8
+        with:
+          name: dist
+          path: dist/
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1

@@ -33,7 +33,7 @@ mypy                          # strict type checks on src/ and tests/
 The documentation is built with Sphinx from the `docs/` folder:
 
 ```bash
-python -m sphinx -W -b html docs docs/_build/html
+python -m sphinx -W -n -b html docs docs/_build/html
 ```
 
 Open `docs/_build/html/index.html` to view it.
