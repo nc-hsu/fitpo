@@ -62,13 +62,14 @@ def fit_deluca_backbone(
     plateau_min_length_fraction: float = 0.05,
     origin: OriginMode = "strict",
 ) -> FitResult:
-    """Fit a bilinear, trilinear or quadrilinear backbone to a pushover curve.
+    r"""Fit a bilinear, trilinear or quadrilinear backbone to a pushover curve.
 
     Parameters
     ----------
     pushover
-        ``(N, 2)`` curve: column 0 displacement (increasing, from 0),
-        column 1 force.
+        ``(N, 2)`` curve: column 0 displacement (never decreasing), column 1
+        force. Any consistent units work; the examples use mm
+        and N.
     mode
         ``"auto"`` (default) fits trilinear and quadrilinear and keeps the
         plateau only if the plateau-acceptance rule below holds.
@@ -132,6 +133,43 @@ def fit_deluca_backbone(
         On invalid input, if the peak is at the last point (trilinear and
         quadrilinear modes), if ``F_max / k_e >= d_max`` where that point is
         needed, or if the fitted shape fails the validity checks.
+
+    Notes
+    -----
+    The method follows De Luca et al. (2013). The elastic stiffness
+    :math:`k_e` is the secant to ``elastic_ref_fraction`` of the peak force.
+    Each later segment is chosen to minimise the area between it and the
+    data,
+
+    .. math::
+
+        \int \left| F(d) - \hat F(d) \right| \, \mathrm{d}d ,
+
+    where :math:`F` is the curve and :math:`\hat F` the fit.
+
+    Examples
+    --------
+    >>> import numpy as np
+    >>> import fitpo
+    >>> d = np.linspace(0.0, 120.0, 241)
+    >>> f = np.interp(d, [0, 10, 40, 80, 120], [0, 1000, 1200, 600, 600])
+    >>> curve = np.column_stack([d, f])
+    >>> res = fitpo.fit_deluca_backbone(curve)
+    >>> res.mode
+    'quadrilinear-deluca'
+    >>> print(np.round(res.fitted_po, 1))
+    [[   0.    0.]
+     [  10. 1000.]
+     [  40. 1200.]
+     [  80.  600.]
+     [ 120.  600.]]
+
+    References
+    ----------
+    De Luca, F., Vamvatsikos, D. and Iervolino, I. (2013). Near-optimal
+    piecewise linear fits of static pushover capacity curves for equivalent
+    SDOF analysis. *Earthquake Engineering & Structural Dynamics*, 42(4),
+    523-543. https://doi.org/10.1002/eqe.2225
     """
     if mode not in _DELUCA_MODES:
         raise ValueError(f"mode must be one of {_DELUCA_MODES}; got {mode!r}")
@@ -224,6 +262,47 @@ def elastic_slope(
     before the peak). If the first sample is already at or above
     ``ref_fraction * f_peak``, the crossing lies before the data and a
     ``ValueError`` is raised.
+
+    Parameters
+    ----------
+    d_asc, f_asc
+        Displacement and force of the rising branch, from the first point up
+        to and including the peak. Any consistent units work; the examples use mm
+        and N.
+    f_peak
+        Peak force of the curve.
+    ref_fraction
+        Fraction of ``f_peak`` that sets the reference point; default 0.10.
+
+    Returns
+    -------
+    float
+        The secant stiffness ``ref_fraction * f_peak / d_ref``, in force per
+        unit displacement.
+
+    Raises
+    ------
+    ValueError
+        If the arrays are not 1-D and of equal, non-zero length, hold NaN or
+        inf, never reach ``ref_fraction * f_peak``, already reach it at the
+        first sample, or if the reference displacement is not positive.
+
+    Examples
+    --------
+    The reference force is ``0.10 * 250 = 25``, reached at ``d = 0.5``:
+
+    >>> import fitpo
+    >>> d = [0.0, 1.0, 2.0, 3.0, 4.0]
+    >>> f = [0.0, 50.0, 120.0, 200.0, 250.0]
+    >>> fitpo.elastic_slope(d, f, 250.0)
+    50.0
+
+    References
+    ----------
+    De Luca, F., Vamvatsikos, D. and Iervolino, I. (2013). Near-optimal
+    piecewise linear fits of static pushover capacity curves for equivalent
+    SDOF analysis. *Earthquake Engineering & Structural Dynamics*, 42(4),
+    523-543. https://doi.org/10.1002/eqe.2225
     """
     d_arr = np.asarray(d_asc, dtype=np.float64)
     f_arr = np.asarray(f_asc, dtype=np.float64)
@@ -257,7 +336,6 @@ def elastic_slope(
     if d_ref <= 0.0:
         raise ValueError("Elastic reference displacement <= 0")
     return f_ref / d_ref
-
 
 
 def _yield_at_peak_force(f_peak: float, k_e: float, d_max: float) -> float:

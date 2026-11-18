@@ -183,9 +183,7 @@ def _interval_area_error(
         return 0.0
     bp = fitted_po[:, 0]
     grid = np.unique(
-        np.concatenate(
-            ([d_lo, d_hi], d[(d > d_lo) & (d < d_hi)], bp[(bp > d_lo) & (bp < d_hi)])
-        )
+        np.concatenate(([d_lo, d_hi], d[(d > d_lo) & (d < d_hi)], bp[(bp > d_lo) & (bp < d_hi)]))
     )
     f_data = np.interp(grid, d, f)
     f_fit = np.interp(grid, fitted_po[:, 0], fitted_po[:, 1])
@@ -220,7 +218,8 @@ def area_error(
     ----------
     curve
         ``(N, 2)`` pushover curve: column 0 displacement (never decreasing),
-        column 1 force.
+        column 1 force. Any consistent units work; the examples use mm
+        and N.
     fitted_po
         ``(M, 2)`` breakpoints of the fitted curve, e.g. ``res.fitted_po``.
     normalised
@@ -246,6 +245,19 @@ def area_error(
         If either array has the wrong shape or holds NaN or inf, if a
         displacement column ever decreases, if ``origin`` is unknown, or if
         ``origin="strict"`` and the curve does not start at ``(0, 0)``.
+
+    Examples
+    --------
+    >>> import numpy as np
+    >>> import fitpo
+    >>> d = np.linspace(0.0, 120.0, 241)
+    >>> f = np.interp(d, [0, 10, 40, 80, 120], [0, 1000, 1200, 600, 600])
+    >>> curve = np.column_stack([d, f])
+    >>> elastic_plastic = [[0.0, 0.0], [10.0, 1000.0], [120.0, 1000.0]]
+    >>> round(fitpo.area_error(curve, elastic_plastic), 1)
+    25667.5
+    >>> round(fitpo.area_error(curve, elastic_plastic, normalised=True), 4)
+    0.2619
     """
     d, f = _as_curve(curve, 2, name="curve", origin=origin)
     # The fitted shape is checked too: np.interp gives meaningless values for

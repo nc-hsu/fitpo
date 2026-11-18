@@ -1,5 +1,21 @@
 """fitpo: fit piecewise linear approximations to a nonlinear pushover curve.
 
+A pushover curve of a complex multi-degree-of-freedom structure is reduced
+to a few straight segments, the backbone of an equivalent single-degree-of-
+freedom system. Every fit chooses its segments to minimise the area between
+the backbone and the curve:
+
+- :func:`fit_deluca_backbone`: bilinear, trilinear or quadrilinear fits
+  after De Luca et al. (2013);
+- :func:`fit_bilinear_backbone`: bilinear fits that end at the last point
+  or at a set strength loss;
+- :func:`fit_cbf_cusum_backbone` and :func:`fit_cbf_knots_backbone`: fits
+  for concentrically braced frames, whose curves drop sharply when a brace
+  fractures;
+- :func:`fit_envelope`: positive and negative envelopes of cyclic data,
+  ready for the backbone fits;
+- :func:`area_error` and :func:`elastic_slope`: the measures the fits use.
+
 This top-level package is fitpo's whole public interface; the underscore
 modules behind it are private and may change without notice.
 """

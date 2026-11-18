@@ -65,8 +65,11 @@ fitpo = ["py.typed"]
 
 [tool.pytest.ini_options]
 minversion = "7.0"
-testpaths = ["tests"]
-addopts = "-ra --strict-markers"
+# The docstring examples in src/ run as doctests alongside the tests.
+testpaths = ["tests", "src"]
+addopts = "-ra --strict-markers --doctest-modules"
+# Array printouts in the examples differ only in spacing between numpy builds.
+doctest_optionflags = ["NORMALIZE_WHITESPACE"]
 
 [tool.ruff]
 line-length = 100
@@ -79,7 +82,27 @@ select = ["E", "F", "I", "UP", "B", "SIM", "NPY"]
 [tool.mypy]
 python_version = "3.12"
 strict = true
-files = ["src"]
+files = ["src", "tests"]
+
+# Test modules (listed, since mypy patterns cannot glob a name prefix):
+# pytest passes fixtures and parametrised values by argument name, so
+# annotating every test function adds noise without catching bugs. Only the
+# rules that require annotations are relaxed; test bodies are still checked
+# (strict mode keeps check_untyped_defs on).
+[[tool.mypy.overrides]]
+module = [
+    "conftest",
+    "test_bilinear",
+    "test_cbf_cusum",
+    "test_cbf_knots",
+    "test_common",
+    "test_deluca",
+    "test_envelope",
+    "test_fit_validity",
+    "test_input_checks",
+]
+disallow_untyped_defs = false
+disallow_incomplete_defs = false
 
 [[tool.mypy.overrides]]
 module = ["scipy.*"]

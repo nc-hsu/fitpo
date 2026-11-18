@@ -13,20 +13,31 @@ import numpy as np
 import pytest
 
 import fitpo
-from fitpo._common import _finish, _interval_area_error
+from fitpo._bilinear import BilinearMode
+from fitpo._common import OriginMode, _finish, _interval_area_error
+from fitpo._deluca import DelucaMode
 
 CURVES = sorted((Path(__file__).resolve().parent / "data").glob("*.csv"))
 NO_HARDENING = "trilinear/quadrilinear need a hardening branch"
 NO_RESIDUAL_CROSSING = ".*the force never falls to residual_force_fraction"
 
 
-def _all_fits(curve: np.ndarray, origin: str) -> dict[str, fitpo.FitResult]:
+DELUCA_MODES: tuple[DelucaMode, ...] = (
+    "auto",
+    "bilinear-deluca",
+    "trilinear-deluca",
+    "quadrilinear-deluca",
+)
+BILINEAR_MODES: tuple[BilinearMode, ...] = ("bilinear-ultimate", "bilinear-pctloss")
+
+
+def _all_fits(curve: np.ndarray, origin: OriginMode) -> dict[str, fitpo.FitResult]:
     """Every backbone function in every mode, with the given origin setting."""
-    fits = {}
-    for mode in ("auto", "bilinear-deluca", "trilinear-deluca", "quadrilinear-deluca"):
+    fits: dict[str, fitpo.FitResult] = {}
+    for mode in DELUCA_MODES:
         fits[mode] = fitpo.fit_deluca_backbone(curve, mode=mode, origin=origin)
-    for mode in ("bilinear-ultimate", "bilinear-pctloss"):
-        fits[mode] = fitpo.fit_bilinear_backbone(curve, mode=mode, origin=origin)
+    for bmode in BILINEAR_MODES:
+        fits[bmode] = fitpo.fit_bilinear_backbone(curve, mode=bmode, origin=origin)
     fits["cbf-cusum"] = fitpo.fit_cbf_cusum_backbone(curve, origin=origin)
     for plateau in (True, False):
         res = fitpo.fit_cbf_knots_backbone(curve, residual_plateau=plateau, origin=origin)
@@ -54,7 +65,7 @@ def test_every_mode_gives_valid_geometry(path, origin):
         # po_curve_61 as-is has no hardening line; that case is tested below.
         warnings.filterwarnings("ignore", NO_HARDENING)
         # Most curves never fall to 5 % of the peak, so the knots fit warns
-        # that it has no residual plateau; tested in test_tetralinear_fitting.
+        # that it has no residual plateau; tested in test_cbf_knots.py.
         warnings.filterwarnings("ignore", NO_RESIDUAL_CROSSING)
         fits = _all_fits(curve, origin)
     d_max = curve[-1, 0] - (curve[0, 0] if origin == "correct_disp" else 0.0)
@@ -67,8 +78,9 @@ def test_every_mode_gives_valid_geometry(path, origin):
             assert res.fitted_po[-1, 0] >= d_max * (1 - 1e-12), f"{path.stem} {mode}"
         # The De Luca fits never go beyond the data or above the peak.
         if mode.endswith("deluca") or mode == "auto":
-            assert res.fitted_po[-1, 0] == pytest.approx(curve[-1, 0] - (
-                curve[0, 0] if origin == "correct_disp" else 0.0))
+            assert res.fitted_po[-1, 0] == pytest.approx(
+                curve[-1, 0] - (curve[0, 0] if origin == "correct_disp" else 0.0)
+            )
             assert res.fitted_po[:, 1].max() <= curve[:, 1].max() * (1 + 1e-12)
 
 
@@ -131,9 +143,7 @@ def test_bilinear_deluca_is_elastic_perfectly_plastic(smooth_quadrilinear):
     i_peak = int(np.argmax(f))
     f_max = float(f[i_peak])
     k_e = fitpo.elastic_slope(d[: i_peak + 1], f[: i_peak + 1], f_max)
-    np.testing.assert_allclose(
-        res.fitted_po, [[0.0, 0.0], [f_max / k_e, f_max], [d[-1], f_max]]
-    )
+    np.testing.assert_allclose(res.fitted_po, [[0.0, 0.0], [f_max / k_e, f_max], [d[-1], f_max]])
     assert res.mode == "bilinear-deluca"
     assert res.converged is True
     # Nothing is optimised; objective is the area error over [0, d_max].
@@ -171,16 +181,14 @@ def test_exact_duplicate_rows_are_dropped():
 
 
 def test_non_convergence_warns_with_function_and_mode(monkeypatch, smooth_trilinear):
-    import fitpo._deluca as deluca
-
-    real = deluca.minimize_scalar
+    from scipy.optimize import minimize_scalar as real
 
     def failing(*args, **kwargs):
         res = real(*args, **kwargs)
         res.success = False
         return res
 
-    monkeypatch.setattr(deluca, "minimize_scalar", failing)
+    monkeypatch.setattr("fitpo._deluca.minimize_scalar", failing)
     with pytest.warns(UserWarning, match=r"fit_deluca_backbone \(mode 'trilinear-deluca'\)"):
         res = fitpo.fit_deluca_backbone(smooth_trilinear.curve, mode="trilinear-deluca")
     assert res.converged is False

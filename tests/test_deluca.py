@@ -1,6 +1,4 @@
-"""Tests for fit_deluca_backbone and fit_bilinear_backbone."""
-
-from __future__ import annotations
+"""Tests for fit_deluca_backbone: mode selection, shapes and recovered breakpoints."""
 
 import numpy as np
 import pytest
@@ -35,16 +33,6 @@ def test_force_quadrilinear_over_trilinear_curve(smooth_trilinear):
 def test_force_trilinear_over_quadrilinear_curve(smooth_quadrilinear):
     fit = fit_deluca_backbone(smooth_quadrilinear.curve, mode="trilinear-deluca").fitted_po
     assert fit.shape == (4, 2)
-
-
-def test_bilinear(bilinear_source):
-    fit = fit_bilinear_backbone(bilinear_source.curve, mode="bilinear-pctloss").fitted_po
-    assert fit.shape == (3, 2)
-    assert np.allclose(fit[0], [0.0, 0.0])
-    d_y, f_y = fit[1]
-    d_end, _f_end = fit[2]
-    assert d_y > 0 and f_y > 0
-    assert d_end > d_y
 
 
 def test_staircase_recovers_plateau(staircase):

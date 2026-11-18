@@ -14,11 +14,9 @@ import numpy as np
 import numpy.typing as npt
 from scipy.signal import find_peaks
 
-from fitpo._common import _as_curve
+from fitpo._common import FloatArr, _as_curve
 
-FloatArr = npt.NDArray[np.float64]
-
-EnvelopeMode = Literal[
+type EnvelopeMode = Literal[
     "peak-to-peak",
     "loading-front",
     "displacement-bins",
@@ -51,7 +49,8 @@ def fit_envelope(
     ----------
     cyclic_pushover
         Shape (N, 2): col 0 displacement (time-ordered, non-monotone),
-        col 1 force.
+        col 1 force. Any consistent units work; the examples use mm
+        and N.
     mode
         How the outer backbone is traced:
 
@@ -109,6 +108,48 @@ def fit_envelope(
         Each (M, 2) float64 ndarray of breakpoints starting at ``[0, 0]``. The
         positive envelope has positive displacements/forces; the negative
         envelope has negative displacements/forces.
+
+    Raises
+    ------
+    ValueError
+        On invalid input, an unknown ``mode``, a ``bin_size`` that is not
+        positive, or a displacement signal with zero range.
+
+    Notes
+    -----
+    ``"simplified-loading-front"`` uses the Ramer-Douglas-Peucker
+    simplification (Ramer, 1972; Douglas and Peucker, 1973) with one change:
+    it measures the **vertical** (force) deviation of each point from the
+    chord, not the perpendicular distance, because displacement and force
+    have different units.
+
+    Examples
+    --------
+    Three cycles of growing amplitude on an elastic-perfectly-plastic
+    spring:
+
+    >>> import numpy as np
+    >>> import fitpo
+    >>> t = np.linspace(0.0, 6.0 * np.pi, 2001)
+    >>> d = np.linspace(0.0, 30.0, 2001) * np.sin(t)
+    >>> f = np.clip(100.0 * d, -1500.0, 1500.0)
+    >>> pos, neg = fitpo.fit_envelope(np.column_stack([d, f]))
+    >>> print(np.round(pos))
+    [[   0.    0.]
+     [   3.  290.]
+     [  13. 1260.]
+     [  23. 1500.]]
+
+    References
+    ----------
+    Ramer, U. (1972). An iterative procedure for the polygonal approximation
+    of plane curves. *Computer Graphics and Image Processing*, 1(3),
+    244-256. https://doi.org/10.1016/S0146-664X(72)80017-0
+
+    Douglas, D. H. and Peucker, T. K. (1973). Algorithms for the reduction of
+    the number of points required to represent a digitized line or its
+    caricature. *The Canadian Cartographer*, 10(2), 112-122.
+    https://doi.org/10.3138/FM57-6770-U75U-7727
     """
     if mode not in _MODES:
         raise ValueError(f"mode must be one of {_MODES}; got {mode!r}")
@@ -127,7 +168,8 @@ def fit_envelope(
     abs_tol = displacement_tolerance * d_abs_max
 
     positive_envelope = _build_side(
-        d, f,
+        d,
+        f,
         sign=+1,
         mode=mode,
         bin_size=bin_size,
@@ -139,7 +181,8 @@ def fit_envelope(
         close_at_zero=close_at_zero,
     )
     negative_envelope = _build_side(
-        d, f,
+        d,
+        f,
         sign=-1,
         mode=mode,
         bin_size=bin_size,
@@ -179,12 +222,14 @@ def _build_side(
     elif mode == "displacement-bins":
         points = _binned_points(d, f, sign=sign, bin_size=bin_size)
     elif mode == "adjusted-peak-to-peak":
-        points = _adjusted_peak_points(
-            d, f, sign=sign, prominence=prominence, abs_tol=abs_tol
-        )
+        points = _adjusted_peak_points(d, f, sign=sign, prominence=prominence, abs_tol=abs_tol)
     elif mode == "simplified-loading-front":
         points = _simplified_front_points(
-            d, f, sign=sign, prominence=prominence, abs_tol=abs_tol,
+            d,
+            f,
+            sign=sign,
+            prominence=prominence,
+            abs_tol=abs_tol,
             simplify_tolerance=simplify_tolerance,
         )
     else:  # peak-to-peak
@@ -238,9 +283,7 @@ def _peak_points(
     return grouped
 
 
-def _loading_front_points(
-    d: FloatArr, f: FloatArr, *, sign: int
-) -> list[tuple[float, float]]:
+def _loading_front_points(d: FloatArr, f: FloatArr, *, sign: int) -> list[tuple[float, float]]:
     """Record-high frontier: points whose |displacement| beats all earlier ones.
 
     Walks the trace in time order, keeping each point that pushes past the
@@ -313,9 +356,7 @@ def _adjusted_peak_points(
     return result
 
 
-def _outward_hull(
-    points: list[tuple[float, float]], *, sign: int
-) -> list[tuple[float, float]]:
+def _outward_hull(points: list[tuple[float, float]], *, sign: int) -> list[tuple[float, float]]:
     """Outward convex hull of ``points`` sorted by |displacement| ascending.
 
     Upper hull for ``sign>0`` (keeps points of maximal force), lower hull for
@@ -379,9 +420,7 @@ def _simplified_front_points(
     return result
 
 
-def _rdp_simplify(
-    points: list[tuple[float, float]], tol: float
-) -> list[tuple[float, float]]:
+def _rdp_simplify(points: list[tuple[float, float]], tol: float) -> list[tuple[float, float]]:
     """Ramer-Douglas-Peucker simplification, keeping the endpoints.
 
     ``points`` are ordered outward (by displacement). Deviation is measured

@@ -1,7 +1,5 @@
 """Tests for fit_cbf_cusum_backbone."""
 
-from __future__ import annotations
-
 from pathlib import Path
 
 import numpy as np
@@ -19,18 +17,20 @@ CSV_PATHS = sorted(CURVES_DIR.glob("*.csv"))
 
 
 def _sample_cbf_curve(
-    d_y: float, f_y: float,
-    d_f: float, f_f: float,
-    d_r: float, f_r: float,
-    d_max: float, f_end: float,
+    d_y: float,
+    f_y: float,
+    d_f: float,
+    f_f: float,
+    d_r: float,
+    f_r: float,
+    d_max: float,
+    f_end: float,
     n: int = 801,
     noise_fraction: float = 0.01,
     seed: int = 0,
 ) -> np.ndarray:
     """Synthetic CBF curve with Gaussian noise."""
-    breaks = np.asarray(
-        [[0.0, 0.0], [d_y, f_y], [d_f, f_f], [d_r, f_r], [d_max, f_end]]
-    )
+    breaks = np.asarray([[0.0, 0.0], [d_y, f_y], [d_f, f_f], [d_r, f_r], [d_max, f_end]])
     d = np.linspace(0.0, d_max, n)
     f_clean = np.interp(d, breaks[:, 0], breaks[:, 1])
     rng = np.random.default_rng(seed)
@@ -105,12 +105,12 @@ def test_synthetic_round_trip() -> None:
         return abs(actual - expected) <= rel * max(abs(expected), 1e-9)
 
     # Yield point
-    assert close(fit[1, 0], d_y), f"d_y: {fit[1,0]:.2f} vs {d_y}"
-    assert close(fit[1, 1], f_y), f"f_y: {fit[1,1]:.2f} vs {f_y}"
+    assert close(fit[1, 0], d_y), f"d_y: {fit[1, 0]:.2f} vs {d_y}"
+    assert close(fit[1, 1], f_y), f"f_y: {fit[1, 1]:.2f} vs {f_y}"
     # Segment 2-3 transition slides on the drop line within [d_f, d_r].
-    assert close(fit[2, 0], d_f, rel=0.05), f"d_joint: {fit[2,0]:.2f} vs {d_f}"
+    assert close(fit[2, 0], d_f, rel=0.05), f"d_joint: {fit[2, 0]:.2f} vs {d_f}"
     # Segment 3-4 transition slides on the drop line within [d_r, d_max].
-    assert close(fit[3, 0], d_r, rel=0.50), f"d_r2: {fit[3,0]:.2f} vs {d_r}"
+    assert close(fit[3, 0], d_r, rel=0.50), f"d_r2: {fit[3, 0]:.2f} vs {d_r}"
 
 
 # ---------------------------------------------------------------------------

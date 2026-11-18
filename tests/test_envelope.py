@@ -1,7 +1,5 @@
 """Tests for fit_envelope and its tracing modes."""
 
-from __future__ import annotations
-
 import numpy as np
 import pytest
 
@@ -22,15 +20,11 @@ def test_peak_to_peak_regression(fracture_cyclic):
     """Default peak-to-peak output: origin + each cycle tip, missing the +5 end."""
     pos, neg = fit_envelope(fracture_cyclic.curve)
 
-    expected_pos = np.asarray(
-        [[0.0, 0.0], [1.0, 100.0], [2.0, 180.0], [3.0, 240.0], [4.0, 80.0]]
-    )
+    expected_pos = np.asarray([[0.0, 0.0], [1.0, 100.0], [2.0, 180.0], [3.0, 240.0], [4.0, 80.0]])
     assert pos.shape == expected_pos.shape
     assert np.allclose(pos, expected_pos, atol=1e-6)
 
-    expected_neg = np.asarray(
-        [[0.0, 0.0], [-1.0, -100.0], [-2.0, -180.0], [-3.0, -240.0]]
-    )
+    expected_neg = np.asarray([[0.0, 0.0], [-1.0, -100.0], [-2.0, -180.0], [-3.0, -240.0]])
     assert neg.shape == expected_neg.shape
     assert np.allclose(neg, expected_neg, atol=1e-6)
 
@@ -168,9 +162,7 @@ def test_simplified_front_follows_sheer_drop_below_chord(postpeak_drop_cyclic):
 def test_include_final_peak_adds_endpoint(fracture_cyclic):
     """The +5 endpoint (global max disp) is only kept when include_final_peak."""
     without, _ = fit_envelope(fracture_cyclic.curve, mode="peak-to-peak")
-    with_end, _ = fit_envelope(
-        fracture_cyclic.curve, mode="peak-to-peak", include_final_peak=True
-    )
+    with_end, _ = fit_envelope(fracture_cyclic.curve, mode="peak-to-peak", include_final_peak=True)
 
     assert without[-1, 0] == pytest.approx(4.0, abs=1e-6)
     assert with_end[-1, 0] == pytest.approx(5.0, abs=1e-6)

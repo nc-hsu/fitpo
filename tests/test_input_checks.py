@@ -226,7 +226,8 @@ def test_area_error_origin():
     with pytest.raises(ValueError, match="must start at"):
         fitpo.area_error(curve, res.fitted_po)
     with pytest.raises(ValueError, match="origin must be one of"):
-        fitpo.area_error(shifted, res.fitted_po, origin="shift")
+        # Deliberately not an OriginMode value: the runtime check is under test.
+        fitpo.area_error(shifted, res.fitted_po, origin="shift")  # type: ignore[arg-type]
 
 
 # ---------------------------------------------------------------------------
@@ -286,6 +287,10 @@ def test_backbones_handle_non_monotone_force_below_ref():
     # 10 % of the 1000 peak is first crossed between d = 1.0 (f = 50) and
     # d = 1.5 (f = 150), at d = 1.25, so k_e = 100 / 1.25 = 80. The yield point
     # lies on the elastic line, so f_y / d_y must equal it.
-    for func, _make in [p.values for p in BACKBONES if p.id != "cbf_cusum"]:
+    for func in (
+        fitpo.fit_deluca_backbone,
+        fitpo.fit_bilinear_backbone,
+        fitpo.fit_cbf_knots_backbone,
+    ):
         d_y, f_y = func(curve).fitted_po[1]
         assert f_y / d_y == pytest.approx(80.0)

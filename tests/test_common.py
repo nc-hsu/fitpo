@@ -39,7 +39,7 @@ def test_bilinear_modes(bilinear_source):
     assert fitpo.fit_bilinear_backbone(bilinear_source.curve).mode == "bilinear-ultimate"
 
 
-def _cbf_curve():
+def _cbf_curve() -> np.ndarray:
     xs = [0.0, 20.0, 100.0, 120.0, 200.0]
     ys = [0.0, 1000.0, 900.0, 150.0, 150.0]
     d = np.linspace(0.0, 200.0, 401)

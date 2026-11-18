@@ -45,8 +45,9 @@ def fit_bilinear_backbone(
     Parameters
     ----------
     pushover
-        ``(N, 2)`` curve: column 0 displacement (increasing, from 0),
-        column 1 force.
+        ``(N, 2)`` curve: column 0 displacement (never decreasing), column 1
+        force. Any consistent units work; the examples use mm
+        and N.
     mode
         ``"bilinear-ultimate"`` (default): the second segment ends at the last
         data point, or at the last zero-force crossing when the curve ends
@@ -79,6 +80,37 @@ def fit_bilinear_backbone(
         ``fitted_po`` has 3 rows: origin, yield, end. ``objective`` is the
         area error over ``[d_y, d_end]`` (``d_end`` being ``d_u`` for
         ``"bilinear-ultimate"``).
+
+    Warns
+    -----
+    UserWarning
+        If an optimiser does not report convergence (``converged`` is then
+        ``False``).
+
+    Raises
+    ------
+    ValueError
+        On invalid input, an unknown ``mode`` or a peak force that is not
+        positive; if the zero-force crossing that ends ``"bilinear-ultimate"``
+        cannot be located; or if the fitted shape fails the validity checks.
+
+    Examples
+    --------
+    >>> import numpy as np
+    >>> import fitpo
+    >>> d = np.linspace(0.0, 120.0, 241)
+    >>> f = np.interp(d, [0, 10, 40, 80, 120], [0, 1000, 1200, 600, 600])
+    >>> curve = np.column_stack([d, f])
+    >>> res = fitpo.fit_bilinear_backbone(curve)
+    >>> print(np.round(res.fitted_po, 1))
+    [[   0.     0. ]
+     [  11.4 1144.6]
+     [ 120.   600. ]]
+    >>> res = fitpo.fit_bilinear_backbone(curve, mode="bilinear-pctloss")
+    >>> print(np.round(res.fitted_po, 1))
+    [[   0.     0. ]
+     [  11.6 1160.5]
+     [  56.   960. ]]
     """
     if mode not in _BILINEAR_MODES:
         raise ValueError(f"mode must be one of {_BILINEAR_MODES}; got {mode!r}")

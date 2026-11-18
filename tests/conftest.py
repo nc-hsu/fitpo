@@ -1,10 +1,9 @@
 """Synthetic pushover-curve fixtures for tests and viz script."""
 
-from __future__ import annotations
-
 from dataclasses import dataclass, field
 
 import numpy as np
+import numpy.typing as npt
 import pytest
 
 
@@ -32,9 +31,7 @@ def _add_noise(f: np.ndarray, f_peak: float, seed: int, fraction: float = 0.01) 
 
 
 def build_smooth_quadrilinear() -> Fixture:
-    breaks = np.asarray(
-        [[0.0, 0.0], [1.0, 100.0], [3.0, 150.0], [6.0, 105.0], [10.0, 105.0]]
-    )
+    breaks = np.asarray([[0.0, 0.0], [1.0, 100.0], [3.0, 150.0], [6.0, 105.0], [10.0, 105.0]])
     d, f_clean = _sample_piecewise(breaks)
     f = _add_noise(f_clean, f_peak=150.0, seed=42)
     return Fixture(
@@ -58,9 +55,7 @@ def build_smooth_trilinear() -> Fixture:
 
 
 def build_bilinear_source() -> Fixture:
-    breaks = np.asarray(
-        [[0.0, 0.0], [1.0, 100.0], [3.0, 150.0], [6.0, 105.0], [10.0, 105.0]]
-    )
+    breaks = np.asarray([[0.0, 0.0], [1.0, 100.0], [3.0, 150.0], [6.0, 105.0], [10.0, 105.0]])
     d, f_clean = _sample_piecewise(breaks)
     f = _add_noise(f_clean, f_peak=150.0, seed=44)
     return Fixture(
@@ -89,9 +84,7 @@ def build_staircase() -> Fixture:
     )
     d, f_clean = _sample_piecewise(levels, n=501)
     f = _add_noise(f_clean, f_peak=150.0, seed=45)
-    approx = np.asarray(
-        [[0.0, 0.0], [1.0, 100.0], [3.0, 150.0], [6.0, 110.0], [10.0, 110.0]]
-    )
+    approx = np.asarray([[0.0, 0.0], [1.0, 100.0], [3.0, 150.0], [6.0, 110.0], [10.0, 110.0]])
     return Fixture(
         label="staircase descending",
         curve=np.column_stack([d, f]),
@@ -117,8 +110,8 @@ _FRACTURE_KNOTS_D = np.asarray([0.0, 1.0, 2.0, 3.0, 3.2, 4.0, 5.0])
 _FRACTURE_KNOTS_F = np.asarray([0.0, 100.0, 180.0, 240.0, 250.0, 80.0, 75.0])
 
 
-def _fracture_backbone(d_abs: np.ndarray) -> np.ndarray:
-    return np.interp(d_abs, _FRACTURE_KNOTS_D, _FRACTURE_KNOTS_F)
+def _fracture_backbone(d_abs: npt.NDArray[np.float64] | float) -> npt.NDArray[np.float64]:
+    return np.asarray(np.interp(d_abs, _FRACTURE_KNOTS_D, _FRACTURE_KNOTS_F), dtype=np.float64)
 
 
 def build_fracture_cyclic() -> Fixture:

@@ -47,10 +47,19 @@ def fit_cbf_cusum_backbone(
 ) -> FitResult:
     """Fit a 4-segment backbone to a CBF pushover curve, locating fracture by CUSUM.
 
+    The fracture drop is found by a one-sided CUSUM change detector (Page,
+    1954) run on the standardised slope of the curve. The post-buckling and
+    residual lines around it are then fitted by area minimisation. The
+    detector needs enough samples around the drop to see the change in
+    slope, so it suits densely sampled curves; for sparse envelopes use
+    :func:`fit_cbf_knots_backbone`.
+
     Parameters
     ----------
     pushover
-        ``(N, 2)`` curve: column 0 displacement (increasing), column 1 force.
+        ``(N, 2)`` curve: column 0 displacement (never decreasing), column 1
+        force. Any consistent units work; the examples use mm
+        and N.
     cusum_threshold
         CUSUM trigger threshold on the standardised slope of the curve.
     cusum_drift
@@ -86,6 +95,43 @@ def fit_cbf_cusum_backbone(
         knots are chosen so segments 2 and 4 each minimise their area error
         against the data. ``mode`` is ``"quadrilinear-cbf-cusum"``;
         ``objective`` is the area error over ``[d_y, d_max]``.
+
+    Warns
+    -----
+    UserWarning
+        If an optimiser does not report convergence (``converged`` is then
+        ``False``).
+
+    Raises
+    ------
+    ValueError
+        On invalid input, a peak force that is not positive, or a peak at
+        the last data point; if CUSUM detects no fracture, or the curve is
+        too flat in the search window to standardise its slope; or if the
+        fitted shape fails the validity checks.
+
+    Examples
+    --------
+    A noisy curve with a sharp drop at about 80 mm:
+
+    >>> import numpy as np
+    >>> import fitpo
+    >>> rng = np.random.default_rng(0)
+    >>> d = np.linspace(0.0, 120.0, 801)
+    >>> f = np.interp(d, [0, 10, 80, 82, 120], [0, 500, 350, 100, 80])
+    >>> f[1:] += rng.normal(0.0, 2.0, 800)
+    >>> res = fitpo.fit_cbf_cusum_backbone(np.column_stack([d, f]))
+    >>> print(np.round(res.fitted_po))
+    [[  0.   0.]
+     [ 10. 501.]
+     [ 80. 350.]
+     [ 82. 100.]
+     [120.  80.]]
+
+    References
+    ----------
+    Page, E. S. (1954). Continuous inspection schemes. *Biometrika*,
+    41(1/2), 100-115. https://doi.org/10.1093/biomet/41.1-2.100
     """
     d, f = _as_curve(pushover, 5, origin=origin)
     n = len(d)
@@ -175,7 +221,8 @@ def fit_cbf_knots_backbone(
     ----------
     pushover
         ``(N, 2)`` curve: column 0 displacement (never decreasing), column 1
-        force.
+        force. Any consistent units work; the examples use mm
+        and N.
     joint_force_fraction
         Target for ``d_f`` is ``fraction * f_peak``; default 0.80.
         Ignored when ``d_f`` is given.
@@ -240,6 +287,45 @@ def fit_cbf_knots_backbone(
     forces, so they are solved exactly (a linear program with the plateau, a
     weighted median for the drop). ``f_y``, and the zero-force point of the
     drop, are found by 1-D searches.
+
+    Warns
+    -----
+    UserWarning
+        With the plateau and force-fraction knots, if the curve never falls
+        to ``residual_force_fraction * f_peak``. Also if an optimiser does
+        not report convergence.
+
+    Raises
+    ------
+    ValueError
+        On invalid input, a peak force that is not positive, or a peak at
+        the last data point; on invalid fractions or knots; if the curve
+        never falls to ``joint_force_fraction * f_peak``; or if the fitted
+        shape fails the validity checks.
+
+    Examples
+    --------
+    >>> import numpy as np
+    >>> import fitpo
+    >>> d = np.linspace(0.0, 200.0, 401)
+    >>> f = np.interp(d, [0, 20, 100, 110, 200], [0, 1000, 900, 40, 40])
+    >>> curve = np.column_stack([d, f])
+    >>> res = fitpo.fit_cbf_knots_backbone(curve)
+    >>> res.mode
+    'quadrilinear-cbf-knots'
+    >>> print(np.round(res.fitted_po))
+    [[   0.    0.]
+     [  20. 1000.]
+     [ 101.  899.]
+     [ 110.   40.]
+     [ 200.   40.]]
+    >>> res = fitpo.fit_cbf_knots_backbone(curve, residual_plateau=False)
+    >>> print(np.round(res.fitted_po))
+    [[   0.    0.]
+     [  20. 1000.]
+     [ 101.  899.]
+     [ 110.    0.]
+     [ 200.    0.]]
     """
     if residual_plateau and (d_f is None) != (d_r is None):
         raise ValueError("Give both d_f and d_r, or neither")
@@ -330,7 +416,9 @@ def fit_cbf_knots_backbone(
 
 
 def _snap_descending_crossing(
-    f: FloatArr, i_start: int, target: float,
+    f: FloatArr,
+    i_start: int,
+    target: float,
 ) -> int | None:
     """Snap to the data point nearest the descending crossing of ``target``.
 
@@ -368,9 +456,7 @@ def _detect_fracture_region(
     d_s = d[i_start:]
     f_s = f[i_start:]
     if len(d_s) < 3:
-        raise ValueError(
-            f"Fewer than 3 samples remain after CUSUM search start (got {len(d_s)})"
-        )
+        raise ValueError(f"Fewer than 3 samples remain after CUSUM search start (got {len(d_s)})")
 
     velocity = np.gradient(f_s, d_s)
     mean = float(np.mean(velocity))
@@ -463,6 +549,12 @@ def _segment_area(
     f_joint: float,
     k_pb: float,
 ) -> float:
+    """Area error of the post-buckling line on the data in ``[d_y, d_joint]``.
+
+    The line passes through ``(d_joint, f_joint)`` with slope ``k_pb``. With
+    no data in the range there is nothing to score, so a large value steers
+    the search away from that choice.
+    """
     mask = (d >= d_y) & (d <= d_joint)
     if not bool(mask.any()):
         return 1e18
@@ -594,9 +686,9 @@ def _knot_grid(d: FloatArr, d_lo: float, d_hi: float, knots: list[float]) -> Flo
     errors computed here equal the reported ``objective``.
     """
     kn = np.asarray(knots, dtype=np.float64)
-    return np.unique(np.concatenate((
-        [d_lo, d_hi], d[(d > d_lo) & (d < d_hi)], kn[(kn > d_lo) & (kn < d_hi)]
-    )))
+    return np.unique(
+        np.concatenate(([d_lo, d_hi], d[(d > d_lo) & (d < d_hi)], kn[(kn > d_lo) & (kn < d_hi)]))
+    )
 
 
 def _fit_knots_plateau(
