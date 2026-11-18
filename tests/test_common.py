@@ -46,6 +46,8 @@ def _cbf_curve():
     return np.column_stack([d, np.interp(d, xs, ys)])
 
 
+# The curve never falls to 5 % of the peak; that warning is tested elsewhere.
+@pytest.mark.filterwarnings("ignore:.*the force never falls to residual_force_fraction")
 def test_cbf_knots_modes():
     curve = _cbf_curve()
     assert fitpo.fit_cbf_knots_backbone(curve).mode == "quadrilinear-cbf-knots"

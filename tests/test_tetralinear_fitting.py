@@ -1,12 +1,12 @@
-"""Tests for fit_cbf_knots_backbone, including the explicit-knot path.
+"""Tests for fit_cbf_knots_backbone.
 
-The function had no coverage before the ``d_f``/``d_r`` arguments were added,
-so this covers both mechanisms: the original force-fraction snapping (which must
-keep behaving exactly as it did) and the explicit knot displacements.
+Covers both ways of placing the knots (force-fraction snapping and explicit
+knot displacements), the residual-plateau mode, and the drop-to-zero mode.
 """
 
 from __future__ import annotations
 
+import warnings
 from pathlib import Path
 
 import numpy as np
@@ -14,6 +14,7 @@ import pytest
 
 from fitpo import fit_cbf_knots_backbone
 from fitpo._cbf import _snap_descending_crossing
+from fitpo._common import _interval_area_error
 
 CURVES_DIR = Path(__file__).resolve().parent / "data"
 
@@ -38,16 +39,22 @@ def _tetralinear(
 
 
 # ---------------------------------------------------------------------------
-# The force-fraction path (unchanged behaviour)
+# The force-fraction path
 # ---------------------------------------------------------------------------
 
 
-def test_returns_five_ordered_breakpoints():
-    bb = fit_cbf_knots_backbone(_tetralinear()).fitted_po
-    assert bb.shape == (5, 2)
+def test_returns_ordered_breakpoints():
+    # The force never drops below 5 % of peak, so d_r snaps to the last point
+    # and the zero-length plateau row is dropped: 4 rows.
+    with pytest.warns(UserWarning, match="never falls to residual_force_fraction"):
+        bb = fit_cbf_knots_backbone(_tetralinear()).fitted_po
+    assert bb.shape == (4, 2)
     assert bb[0].tolist() == [0.0, 0.0]
-    # Displacements are non-decreasing, and the first three strictly increase.
-    assert bb[0, 0] < bb[1, 0] < bb[2, 0] < bb[3, 0] <= bb[4, 0]
+    assert (np.diff(bb[:, 0]) > 0).all()
+    # With a residual crossing inside the data, the plateau row is kept.
+    bb = fit_cbf_knots_backbone(_tetralinear(), residual_force_fraction=0.20).fitted_po
+    assert bb.shape == (5, 2)
+    assert (np.diff(bb[:, 0]) > 0).all()
 
 
 def test_knots_land_on_the_requested_force_fractions():
@@ -71,11 +78,26 @@ def test_recovers_a_noise_free_tetralinear_curve():
     assert bb[2, 1] == pytest.approx(900.0, rel=0.02)   # f_f
 
 
-def test_no_residual_plateau_drops_to_zero_force():
-    bb = fit_cbf_knots_backbone(_tetralinear(), residual_plateau=False).fitted_po
-    # Trilinear shape padded to 5x2 by repeating the endpoint at f = 0.
-    assert bb[3, 1] == pytest.approx(0.0)
-    assert bb[4].tolist() == bb[3].tolist()
+def test_warns_when_the_residual_level_is_never_crossed():
+    # _tetralinear() ends at 15 % of the peak: no 5 % crossing. The warning
+    # gives the level the curve ends at, so the user can pick a higher one.
+    match = r"Raise residual_force_fraction \(the curve ends at 0\.15"
+    with pytest.warns(UserWarning, match=match):
+        res = fit_cbf_knots_backbone(_tetralinear())
+    assert len(res.fitted_po) == 4
+    # With a level the curve does cross, there is no warning and a real plateau.
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        res = fit_cbf_knots_backbone(_tetralinear(), residual_force_fraction=0.20)
+    assert len(res.fitted_po) == 5
+
+
+def test_raises_when_the_joint_level_is_never_crossed():
+    # Never falls to 80 % of the peak (ends at 90 %): no joint knot to snap to.
+    curve = _tetralinear(f_r=900.0)
+    for plateau in (True, False):
+        with pytest.raises(ValueError, match="No descending crossing of joint_force_fraction"):
+            fit_cbf_knots_backbone(curve, residual_plateau=plateau)
 
 
 @pytest.mark.parametrize("jff,rff", [(0.8, 0.9), (0.5, 0.5), (0.0, 0.5), (1.0, 0.5)])
@@ -216,3 +238,99 @@ def test_explicit_knots_work_on_the_example_curves():
         assert bb[2, 0] == pytest.approx(d_f - d[0])
         assert bb[3, 0] == pytest.approx(d_r - d[0])
         assert np.all(np.isfinite(bb))
+
+
+# ---------------------------------------------------------------------------
+# The drop-to-zero mode (residual_plateau=False)
+# ---------------------------------------------------------------------------
+
+
+def _drop_curve(d_zero: float, d_max: float = 200.0, n: int = 401) -> np.ndarray:
+    """Noise-free curve: elastic to (20, 1000), decline to (100, 900), drop to zero at d_zero."""
+    xs = np.asarray([0.0, 20.0, 100.0, d_zero, max(d_zero, d_max) + 1.0])
+    ys = np.asarray([0.0, 1000.0, 900.0, 0.0, 0.0])
+    d = np.linspace(0.0, d_max, n)
+    return np.column_stack([d, np.interp(d, xs, ys)])
+
+
+def test_drop_mode_recovers_a_drop_that_ends_inside_the_data():
+    res = fit_cbf_knots_backbone(_drop_curve(140.0), residual_plateau=False, d_f=100.0)
+    assert res.mode == "trilinear-cbf-knots"
+    assert res.converged
+    # [0, 0], yield, joint, zero-force point, then [d_max, 0].
+    expected = [[0.0, 0.0], [20.0, 1000.0], [100.0, 900.0], [140.0, 0.0], [200.0, 0.0]]
+    np.testing.assert_allclose(res.fitted_po, expected, rtol=1e-3, atol=1e-6)
+
+
+def test_drop_mode_recovers_a_drop_that_ends_beyond_the_data():
+    # The line reaches zero at d = 250, past d_max = 200: no [d_max, 0] row.
+    res = fit_cbf_knots_backbone(_drop_curve(250.0), residual_plateau=False, d_f=100.0)
+    expected = [[0.0, 0.0], [20.0, 1000.0], [100.0, 900.0], [250.0, 0.0]]
+    np.testing.assert_allclose(res.fitted_po, expected, rtol=1e-3, atol=1e-6)
+
+
+def test_drop_mode_needs_no_residual_crossing():
+    # _tetralinear() never falls below 15 % of the peak, so a 5 % residual
+    # crossing does not exist; the drop mode doesn't look for one.
+    res = fit_cbf_knots_backbone(_tetralinear(), residual_plateau=False)
+    assert res.converged
+    assert res.fitted_po[-1, 1] == 0.0
+    assert (np.diff(res.fitted_po[:, 0]) > 0.0).all()
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"residual_force_fraction": 0.95},  # invalid for the plateau mode
+        {"residual_force_fraction": -1.0},
+        {"d_f": 100.0, "d_r": 50.0},  # d_r before d_f: ignored
+        {"d_f": 100.0, "d_r": 1e9},  # d_r beyond the data: ignored
+    ],
+)
+def test_drop_mode_ignores_d_r_and_the_residual_fraction(kwargs):
+    curve = _drop_curve(140.0)
+    reference = fit_cbf_knots_backbone(
+        curve, residual_plateau=False, d_f=kwargs.get("d_f")
+    )
+    res = fit_cbf_knots_backbone(curve, residual_plateau=False, **kwargs)
+    np.testing.assert_array_equal(res.fitted_po, reference.fitted_po)
+
+
+def test_drop_mode_scores_only_the_data_range():
+    # The drop of this curve reaches zero past d_max, so the fitted line extends
+    # beyond the data. Only [d_y, d_max] may be scored: nothing past d_max,
+    # where the data would otherwise be extended flat at f[-1].
+    curve = _drop_curve(250.0)
+    d, f = curve[:, 0], curve[:, 1]
+    res = fit_cbf_knots_backbone(curve, residual_plateau=False)
+    assert res.fitted_po[-1, 0] > d[-1]
+    d_y = res.fitted_po[1, 0]
+    assert res.objective == pytest.approx(
+        _interval_area_error(d, f, res.fitted_po, d_y, d[-1]), rel=1e-12
+    )
+    # An independent dense integral over [d_y, d_max] gives the same score.
+    x = np.linspace(d_y, d[-1], 200001)
+    fit = np.interp(x, res.fitted_po[:, 0], res.fitted_po[:, 1])
+    dense = np.trapezoid(np.abs(np.interp(x, d, f) - fit), x)
+    assert res.objective == pytest.approx(dense, rel=1e-4)
+
+
+def test_drop_mode_ignores_fake_points_appended_beyond_the_fit_range():
+    # A noisy curve whose drop ends inside the data: points appended at zero
+    # force beyond d_max lie on the fitted zero-force tail, so they add no
+    # area and the knot forces and drop end are unchanged.
+    rng = np.random.default_rng(3)
+    curve = _drop_curve(140.0)
+    curve[1:, 1] += rng.normal(0.0, 5.0, len(curve) - 1)
+    extra = np.column_stack([np.linspace(201.0, 260.0, 60), np.zeros(60)])
+    a = fit_cbf_knots_backbone(curve, residual_plateau=False, d_f=100.0).fitted_po
+    b = fit_cbf_knots_backbone(
+        np.vstack([curve, extra]), residual_plateau=False, d_f=100.0
+    ).fitted_po
+    np.testing.assert_allclose(b[:4], a[:4], rtol=1e-6)
+    assert b[-1].tolist() == [260.0, 0.0]
+
+
+def test_drop_mode_rejects_d_f_outside_the_data():
+    with pytest.raises(ValueError, match="0 < d_f < d_max"):
+        fit_cbf_knots_backbone(_drop_curve(140.0), residual_plateau=False, d_f=250.0)

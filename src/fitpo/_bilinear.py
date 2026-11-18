@@ -23,6 +23,7 @@ from fitpo._common import (
     OriginMode,
     _area_error,
     _as_curve,
+    _finish,
     _interval_area_error,
 )
 from fitpo._deluca import elastic_slope
@@ -99,7 +100,8 @@ def fit_bilinear_backbone(
 
     d_y = f_y / k_e
     bp = np.asarray([[0.0, 0.0], [d_y, f_y], [d_end, f_end]], dtype=np.float64)
-    return FitResult(bp, mode, _interval_area_error(d, f, bp, d_y, d_end), success)
+    obj = _interval_area_error(d, f, bp, d_y, d_end)
+    return _finish(bp, mode, obj, success, "fit_bilinear_backbone")
 
 
 def _end_point_at_fraction(

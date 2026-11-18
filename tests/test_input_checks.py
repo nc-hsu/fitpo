@@ -5,6 +5,15 @@ import pytest
 
 import fitpo
 
+# These tests are about input handling, not fit quality. The noise-free curves
+# below peak exactly at yield, so De Luca has no hardening line and warns, and
+# they never fall to 5 % of the peak, so the knots fit warns that it has no
+# residual plateau. Both warnings are tested elsewhere.
+pytestmark = [
+    pytest.mark.filterwarnings("ignore:trilinear/quadrilinear need a hardening branch"),
+    pytest.mark.filterwarnings("ignore:.*the force never falls to residual_force_fraction"),
+]
+
 
 def _cbf_curve(d0: float = 0.0, f0: float = 0.0) -> np.ndarray:
     """Noise-free CBF-like curve, optionally offset so it starts at (d0, f0)."""
@@ -158,7 +167,8 @@ def test_correct_disp_shifts_displacement_only(func, make):
     # A force offset is kept, so the fit differs from the one at the origin.
     raised = func(make(d0=0.5, f0=3.0), origin="correct_disp")
     assert raised.fitted_po[0].tolist() == [0.0, 0.0]
-    assert not np.allclose(raised.fitted_po, at_origin.fitted_po)
+    same_shape = raised.fitted_po.shape == at_origin.fitted_po.shape
+    assert not same_shape or not np.allclose(raised.fitted_po, at_origin.fitted_po)
 
 
 @pytest.mark.parametrize("func,make", BACKBONES)

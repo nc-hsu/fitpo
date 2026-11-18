@@ -13,11 +13,12 @@ sudden drop, so this module offers two fits built around it:
   forces together by area minimisation.
 """
 
+import warnings
 from typing import Literal
 
 import numpy as np
 import numpy.typing as npt
-from scipy.optimize import minimize, minimize_scalar
+from scipy.optimize import linprog, minimize_scalar
 
 from fitpo._common import (
     FitResult,
@@ -25,6 +26,8 @@ from fitpo._common import (
     OriginMode,
     _area_error,
     _as_curve,
+    _finish,
+    _grid_then_brent,
     _interval_area_error,
 )
 from fitpo._deluca import elastic_slope
@@ -120,9 +123,8 @@ def fit_cbf_cusum_backbone(
         [[0.0, 0.0], [d_y, f_y], [d_joint, f_joint], [d_r2, f_r2], [d_max, f_end]],
         dtype=np.float64,
     )
-    return FitResult(
-        bp, "quadrilinear-cbf-cusum", _interval_area_error(d, f, bp, d_y, d_max), all(ok)
-    )
+    obj = _interval_area_error(d, f, bp, d_y, d_max)
+    return _finish(bp, "quadrilinear-cbf-cusum", obj, all(ok), "fit_cbf_cusum_backbone")
 
 
 def fit_cbf_knots_backbone(
@@ -138,19 +140,27 @@ def fit_cbf_knots_backbone(
 ) -> FitResult:
     """Fit a CBF backbone with fixed knot displacements by joint area minimisation.
 
-    Segments: elastic (0 -> y), post-buckling decline (y -> f), fracture
-    drop (f -> r), and a horizontal residual plateau (r -> max). ``f_y``,
-    ``f_f`` and ``f_r`` are found together by minimising the area between
-    segments 2-4 and the data over ``[d_y, d_max]``.
+    Segments: elastic (0 -> y), post-buckling decline (y -> f), then either
+    a fracture drop (f -> r) and a horizontal residual plateau (r -> max), or
+    a single drop to zero force. The knot forces are found together by
+    minimising the area between the fit and the data over ``[d_y, d_max]``;
+    nothing beyond the last data point is scored.
 
-    The two interior knot *displacements* can be set either way:
+    The interior knot *displacements* can be set either way:
 
-    - **By force fraction** (default): ``d_f`` and ``d_r`` are snapped to
-      data points near the descending crossings of
+    - **By force fraction** (default): ``d_f`` (and ``d_r`` with the
+      plateau) are snapped to data points near the descending crossings of
       ``joint_force_fraction * f_peak`` and ``residual_force_fraction *
       f_peak``.
-    - **By displacement**: pass ``d_f`` and ``d_r`` directly and the
-      snapping is skipped, along with the force fractions.
+    - **By displacement**: pass ``d_f`` (and ``d_r`` with the plateau)
+      directly and the snapping is skipped, along with the force fractions.
+
+    With force fractions, a meaningful quadrilinear fit needs the curve to
+    cross both levels after the peak. If it never falls to
+    ``joint_force_fraction * f_peak``, a ``ValueError`` is raised. If it
+    never falls to ``residual_force_fraction * f_peak``, ``d_r`` becomes the
+    last data point, the plateau has zero length and the fit has only three
+    branches; a ``UserWarning`` suggests raising ``residual_force_fraction``.
 
     The distinction matters when the knots are being *searched over*.
     Snapping resolves a fraction to "the first data point at or below
@@ -164,25 +174,30 @@ def fit_cbf_knots_backbone(
     Parameters
     ----------
     pushover
-        ``(N, 2)`` curve: column 0 displacement (increasing), column 1 force.
+        ``(N, 2)`` curve: column 0 displacement (never decreasing), column 1
+        force.
     joint_force_fraction
         Target for ``d_f`` is ``fraction * f_peak``; default 0.80.
-        Ignored when ``d_f``/``d_r`` are given.
+        Ignored when ``d_f`` is given.
     residual_force_fraction
-        Target for ``d_r`` is ``fraction * f_peak``; default 0.05.
-        Must satisfy ``0 < residual_force_fraction < joint_force_fraction < 1``.
-        Ignored when ``d_f``/``d_r`` are given.
+        Target for ``d_r`` is ``fraction * f_peak``; default 0.05. Must
+        satisfy ``0 < residual_force_fraction < joint_force_fraction < 1``.
+        Ignored when ``d_r`` is given, and ignored entirely when
+        ``residual_plateau=False``.
     residual_plateau
         If ``True`` (default), the curve ends on a horizontal residual
-        plateau. If ``False``, there is no plateau: the fracture drop
-        continues with its own slope down to zero force.
+        plateau. If ``False``, there is no plateau and no ``d_r``: the drop
+        from ``(d_f, f_f)`` continues with its own fitted slope down to zero
+        force.
     d_f, d_r
         Interior knot displacements, in the units of column 0 and in the
         coordinates of the curve as passed in; with ``origin="correct_disp"``
         or ``"correct_dispforc"`` they are shifted by ``d[0]`` along with the
-        curve. Give both or neither; after any shift they must satisfy
-        ``0 < d_f < d_r <= d_max``. Giving them bypasses the force-fraction
-        snapping entirely.
+        curve. With the plateau, give both or neither; after any shift they
+        must satisfy ``0 < d_f < d_r <= d_max``. With
+        ``residual_plateau=False`` only ``d_f`` is used (``0 < d_f <
+        d_max``) and ``d_r`` is ignored. Giving them bypasses the
+        force-fraction snapping.
     elastic_ref_fraction
         The elastic stiffness is the secant to this fraction of the peak
         force on the rising branch.
@@ -206,10 +221,12 @@ def fit_cbf_knots_backbone(
     FitResult
         With ``residual_plateau=True``: ``mode`` is
         ``"quadrilinear-cbf-knots"`` and ``fitted_po`` is
-        ``[[0, 0], [d_y, f_y], [d_f, f_f], [d_r, f_r], [d_max, f_r]]``.
+        ``[[0, 0], [d_y, f_y], [d_f, f_f], [d_r, f_r], [d_max, f_r]]``; the
+        last row is dropped when ``d_r == d_max``.
         With ``residual_plateau=False``: ``mode`` is
         ``"trilinear-cbf-knots"`` and ``fitted_po`` is
-        ``[[0, 0], [d_y, f_y], [d_f, f_f], [d_zero, 0], [d_zero, 0]]``.
+        ``[[0, 0], [d_y, f_y], [d_f, f_f], [d_zero, 0]]``, followed by
+        ``[d_max, 0]`` when the drop reaches zero force before ``d_max``.
         ``objective`` is the area error over ``[d_y, d_max]``.
 
     Notes
@@ -218,8 +235,13 @@ def fit_cbf_knots_backbone(
     ``k_e`` the secant stiffness at ``elastic_ref_fraction`` of the peak
     force on the rising branch. Setting ``d_f``/``d_r`` therefore gives
     no control over ``d_y``.
+
+    For a fixed ``f_y`` the fitted curve is linear in the other knot
+    forces, so they are solved exactly (a linear program with the plateau, a
+    weighted median for the drop). ``f_y``, and the zero-force point of the
+    drop, are found by 1-D searches.
     """
-    if (d_f is None) != (d_r is None):
+    if residual_plateau and (d_f is None) != (d_r is None):
         raise ValueError("Give both d_f and d_r, or neither")
 
     # Explicit knots are given in the input curve's coordinates, so record the
@@ -238,53 +260,68 @@ def fit_cbf_knots_backbone(
 
     k_e = elastic_slope(d[: i_peak + 1], f[: i_peak + 1], f_peak, ref_fraction=elastic_ref_fraction)
     d_max = float(d[-1])
+    ok: list[bool] = []
 
-    if d_f is not None and d_r is not None:
-        # Knots given directly: no snapping, so they need not be data points.
-        # Seed the inner solver from the curve at those displacements, which is
-        # what the snapping path passes from the points it landed on.
-        d_f_knot = float(d_f) - d_shift
-        d_r_knot = float(d_r) - d_shift
-        if not 0.0 < d_f_knot < d_r_knot <= d_max:
-            raise ValueError(
-                f"Require 0 < d_f < d_r <= d_max after the origin shift; got "
-                f"d_f={d_f_knot:.6g}, d_r={d_r_knot:.6g}, d_max={d_max:.6g}"
-            )
-        f_f_init = float(np.interp(d_f_knot, d, f))
-        f_r_init = float(np.interp(d_r_knot, d, f))
+    if not residual_plateau:
+        # Drop to zero force: only d_f is needed; d_r and the residual
+        # fraction play no part, so they are neither required nor checked.
+        if d_f is not None:
+            d_f_knot = float(d_f) - d_shift
+            if not 0.0 < d_f_knot < d_max:
+                raise ValueError(
+                    f"Require 0 < d_f < d_max after the origin shift; got "
+                    f"d_f={d_f_knot:.6g}, d_max={d_max:.6g}"
+                )
+        else:
+            if not 0.0 < joint_force_fraction < 1.0:
+                raise ValueError("Require 0 < joint_force_fraction < 1")
+            i_f = _snap_descending_crossing(f, i_peak, joint_force_fraction * f_peak)
+            if i_f is None or i_f >= n - 1:
+                raise ValueError("No descending crossing of joint_force_fraction * f_peak")
+            d_f_knot = float(d[i_f])
+        bp = _fit_knots_drop(d, f, k_e, d_f_knot, d_max, f_peak, ok)
+        mode = "trilinear-cbf-knots"
     else:
-        # The fractions are only meaningful on the snapping path.
-        if not 0.0 < residual_force_fraction < joint_force_fraction < 1.0:
-            raise ValueError("Require 0 < residual_force_fraction < joint_force_fraction < 1")
-        i_f = _snap_descending_crossing(f, i_peak, joint_force_fraction * f_peak)
-        if i_f is None:
-            raise ValueError("No descending crossing of joint_force_fraction * f_peak")
-        i_r = _snap_descending_crossing(f, i_f, residual_force_fraction * f_peak)
-        if i_r is None:
-            i_r = n - 1
-        if i_f >= i_r:
-            raise ValueError("d_f must precede d_r; choose different fractions")
+        if d_f is not None and d_r is not None:
+            # Knots given directly: no snapping, so they need not be data points.
+            d_f_knot = float(d_f) - d_shift
+            d_r_knot = float(d_r) - d_shift
+            if not 0.0 < d_f_knot < d_r_knot <= d_max:
+                raise ValueError(
+                    f"Require 0 < d_f < d_r <= d_max after the origin shift; got "
+                    f"d_f={d_f_knot:.6g}, d_r={d_r_knot:.6g}, d_max={d_max:.6g}"
+                )
+        else:
+            # The fractions are only meaningful on the snapping path.
+            if not 0.0 < residual_force_fraction < joint_force_fraction < 1.0:
+                raise ValueError("Require 0 < residual_force_fraction < joint_force_fraction < 1")
+            i_f = _snap_descending_crossing(f, i_peak, joint_force_fraction * f_peak)
+            if i_f is None:
+                raise ValueError("No descending crossing of joint_force_fraction * f_peak")
+            i_r = _snap_descending_crossing(f, i_f, residual_force_fraction * f_peak)
+            if i_r is None:
+                # No residual crossing: d_r falls back to the last data point,
+                # the plateau has zero length and the fit has only three
+                # branches. Say so, since the result is then not quadrilinear.
+                warnings.warn(
+                    f"fit_cbf_knots_backbone: the force never falls to "
+                    f"residual_force_fraction * f_peak = {residual_force_fraction:g} * f_peak "
+                    f"after d_f, so there is no residual plateau and d_r is the last data "
+                    f"point. Raise residual_force_fraction (the curve ends at "
+                    f"{f[-1] / f_peak:.3g} * f_peak) or pass d_f and d_r explicitly",
+                    stacklevel=2,
+                )
+                i_r = n - 1
+            if i_f >= i_r:
+                raise ValueError("d_f must precede d_r; choose different fractions")
+            d_f_knot = float(d[i_f])
+            d_r_knot = float(d[i_r])
+        bp = _fit_knots_plateau(d, f, k_e, d_f_knot, d_r_knot, d_max, f_peak, ok)
+        mode = "quadrilinear-cbf-knots"
 
-        d_f_knot = float(d[i_f])
-        d_r_knot = float(d[i_r])
-        f_f_init = float(f[i_f])
-        f_r_init = float(f[i_r])
-
-    bp, success = _fit_tetra_free(
-        d,
-        f,
-        k_e,
-        d_f_knot,
-        d_r_knot,
-        d_max,
-        f_peak,
-        f_f_init=f_f_init,
-        f_r_init=f_r_init,
-        collapse_residual=not residual_plateau,
-    )
-    mode = "quadrilinear-cbf-knots" if residual_plateau else "trilinear-cbf-knots"
-    d_y = float(bp[1, 0])
-    return FitResult(bp, mode, _interval_area_error(d, f, bp, d_y, d_max), success)
+    # Both fits reach d_max, so this range lies inside the data.
+    obj = _interval_area_error(d, f, bp, float(bp[1, 0]), d_max)
+    return _finish(bp, mode, obj, all(ok), "fit_cbf_knots_backbone")
 
 
 # ---------------------------------------------------------------------------
@@ -528,7 +565,41 @@ def _fit_residual(
     return k_r, d_r, f_r2, f_end
 
 
-def _fit_tetra_free(
+# Interior grid points for the outer search over the yield force, and for the
+# drop-mode search over where the drop reaches zero force. Each trial of the
+# outer search solves an inner problem exactly, so a coarse grid is enough.
+_KNOTS_YIELD_GRID = 20
+_KNOTS_DROP_GRID = 40
+
+# The drop-mode search covers zero-force points from 1e-6 to 100 times the
+# span [d_f, d_max] beyond d_f, on a log scale: from a near-vertical drop to
+# one that loses only 1 % of f_f per span.
+_DROP_SPAN_MIN = 1e-6
+_DROP_SPAN_MAX = 100.0
+
+
+def _trapezoid_weights(g: FloatArr) -> FloatArr:
+    """Weights ``w`` with ``np.trapezoid(y, g) == w @ y`` for any ``y``."""
+    w = np.zeros_like(g)
+    h = np.diff(g)
+    w[:-1] += h / 2.0
+    w[1:] += h / 2.0
+    return w
+
+
+def _knot_grid(d: FloatArr, d_lo: float, d_hi: float, knots: list[float]) -> FloatArr:
+    """Integration grid over ``[d_lo, d_hi]``: the range ends, the data and the knots inside.
+
+    The same grid :func:`fitpo._common._interval_area_error` uses, so the area
+    errors computed here equal the reported ``objective``.
+    """
+    kn = np.asarray(knots, dtype=np.float64)
+    return np.unique(np.concatenate((
+        [d_lo, d_hi], d[(d > d_lo) & (d < d_hi)], kn[(kn > d_lo) & (kn < d_hi)]
+    )))
+
+
+def _fit_knots_plateau(
     d: FloatArr,
     f: FloatArr,
     k_e: float,
@@ -536,81 +607,169 @@ def _fit_tetra_free(
     d_r: float,
     d_max: float,
     f_peak: float,
-    *,
-    f_f_init: float,
-    f_r_init: float,
-    collapse_residual: bool,
-) -> tuple[FloatArr, bool]:
-    """Joint L-BFGS-B over (f_y, f_f, f_r); return 5x2 breakpoints and success."""
+    ok: list[bool],
+) -> FloatArr:
+    r"""Fit ``f_y``, ``f_f`` and ``f_r`` for fixed knots; return the breakpoints.
+
+    For a fixed yield force ``f_y`` (which also fixes ``d_y = f_y / k_e``),
+    the fitted curve on ``[d_y, d_max]`` is linear in ``f_f`` and ``f_r``:
+
+    .. math::
+
+        \hat F(d) = f_y\,a(d) + f_f\,b(d) + f_r\,c(d)
+
+    with ``a``, ``b`` and ``c`` the piecewise-linear "hat" functions of the
+    knots. The trapezoidal area error is then a weighted sum of absolute
+    residuals, i.e. a weighted L1 fit, which a linear program solves exactly.
+    Only ``f_y`` is left to a 1-D search. This avoids gradient-based search,
+    which stalls on the kinks of the absolute value.
+
+    Bounds: ``0 < d_y < d_f``, ``0 <= f_r <= f_f <= 1.5 f_peak``.
+    """
     upper = 1.5 * f_peak
-    penalty = 1e3 * f_peak * max(d_max, 1.0)
+    lp_ok: list[bool] = []
 
-    def piecewise_fit(d_grid: FloatArr, d_y: float, f_y: float,
-                      f_f: float, f_r: float) -> FloatArr:
-        xs = np.asarray([d_y, d_f, d_r, d_max], dtype=np.float64)
-        ys = np.asarray([f_y, f_f, f_r, f_r], dtype=np.float64)
-        return np.interp(d_grid, xs, ys)
-
-    def piecewise_fit_collapse(d_grid: FloatArr, d_y: float, f_y: float,
-                               f_f: float, f_r: float) -> tuple[FloatArr, float]:
-        k3 = (f_r - f_f) / (d_r - d_f)
-        d_zero = d_f - f_f / k3  # k3 < 0 guaranteed by caller
-        d_end = max(d_max, d_zero)
-        xs = np.asarray([d_y, d_f, d_zero, d_end], dtype=np.float64)
-        ys = np.asarray([f_y, f_f, 0.0, 0.0], dtype=np.float64)
-        return np.interp(d_grid, xs, ys), d_zero
-
-    def objective(x: FloatArr) -> float:
-        f_y, f_f, f_r = float(x[0]), float(x[1]), float(x[2])
+    def solve(f_y: float) -> tuple[float, float, float]:
         d_y = f_y / k_e
-        pen = 0.0
-        if d_y <= 0.0 or d_y >= d_f:
-            pen += penalty
-        if f_r > f_f:
-            pen += penalty * (f_r - f_f) / max(f_peak, 1e-9)
-        if collapse_residual:
-            k3 = (f_r - f_f) / (d_r - d_f)
-            if k3 >= -1e-12:
-                return penalty
-            d_y_eff = max(d_y, 1e-6)
-            d_zero = d_f - f_f / k3
-            d_end = max(d_max, d_zero)
-            d_data = d[d >= d_y_eff]
-            grid = np.unique(np.concatenate(
-                ([d_y_eff], d_data, [d_f, d_zero, d_end])
-            ))
-            f_data = np.interp(grid, d, f)
-            f_fit, _ = piecewise_fit_collapse(grid, d_y_eff, f_y, f_f, f_r)
-            return _area_error(grid, f_data, f_fit) + pen
-        d_y_eff = max(d_y, 1e-6)
-        d_data = d[d >= d_y_eff]
-        grid = np.unique(np.concatenate(([d_y_eff], d_data, [d_f, d_r, d_max])))
-        f_data = np.interp(grid, d, f)
-        f_fit = piecewise_fit(grid, d_y_eff, f_y, f_f, f_r)
-        return _area_error(grid, f_data, f_fit) + pen
+        g = _knot_grid(d, d_y, d_max, [d_f, d_r])
+        a = np.interp(g, [d_y, d_f], [1.0, 0.0])
+        b = np.interp(g, [d_y, d_f, d_r], [0.0, 1.0, 0.0])
+        c = np.interp(g, [d_f, d_r], [0.0, 1.0])
+        # Forces in units of f_peak and weights in units of the span keep the
+        # LP well scaled whatever the units of the data.
+        y = (np.interp(g, d, f) - f_y * a) / f_peak
+        w = _trapezoid_weights(g) / (d_max - d_y)
+        x_f, x_r = _weighted_l1_two(y, b, c, w, upper / f_peak, lp_ok)
+        if not np.isfinite(x_f):
+            return np.inf, 0.0, 0.0
+        f_f, f_r = x_f * f_peak, x_r * f_peak
+        bp = np.asarray([[d_y, f_y], [d_f, f_f], [d_r, f_r], [d_max, f_r]])
+        return _interval_area_error(d, f, bp, d_y, d_max), f_f, f_r
 
-    x0 = np.asarray(
-        [min(f_peak, upper), min(max(f_f_init, 1e-6), upper),
-         min(max(f_r_init, 1e-6), upper)],
-        dtype=np.float64,
+    f_y, _ = _grid_then_brent(
+        lambda x: solve(x)[0], 0.0, min(upper, k_e * d_f), _KNOTS_YIELD_GRID, ok
     )
-    bounds = [(1e-6, upper)] * 3
-    res = minimize(objective, x0=x0, bounds=bounds, method="L-BFGS-B")
-    f_y, f_f, f_r = float(res.x[0]), float(res.x[1]), float(res.x[2])
-    d_y = f_y / k_e
+    _, f_f, f_r = solve(f_y)
+    ok.append(all(lp_ok))
+    return np.asarray(
+        [[0.0, 0.0], [f_y / k_e, f_y], [d_f, f_f], [d_r, f_r], [d_max, f_r]], dtype=np.float64
+    )
 
-    if collapse_residual:
-        k3 = (f_r - f_f) / (d_r - d_f)
-        if k3 >= 0.0:
-            k3 = -1e-12
-        d_zero = d_f - f_f / k3
-        bp = np.asarray(
-            [[0.0, 0.0], [d_y, f_y], [d_f, f_f], [d_zero, 0.0], [d_zero, 0.0]],
-            dtype=np.float64,
+
+def _weighted_l1_two(
+    y: FloatArr, b: FloatArr, c: FloatArr, w: FloatArr, upper: float, ok: list[bool]
+) -> tuple[float, float]:
+    r"""Solve the two-variable weighted L1 fit behind the plateau mode.
+
+    Finds ``x_f``, ``x_r`` that minimise :math:`\sum_i w_i |y_i - b_i x_f -
+    c_i x_r|` subject to ``0 <= x_r <= x_f <= upper``. Returns ``(nan, nan)``
+    if the solver fails.
+
+    The primal problem has a variable per grid point; its dual has the same
+    number of variables but only two constraint rows, which the dual simplex
+    solver handles several times faster. The dual is
+
+    .. math::
+
+        \max_{\lambda, p, q}\; y^\top \lambda - u (p_f + p_r) \quad
+        \text{s.t.}\quad |\lambda_i| \le w_i,\quad
+        B^\top \lambda - p - G^\top q \le 0,\quad p, q \ge 0
+
+    with :math:`B = [b, c]`, :math:`u` = ``upper`` and :math:`G = [-1, 1]`
+    (the row of ``x_r - x_f <= 0``). The primal solution is the multiplier
+    of the two rows of :math:`B^\top \lambda - \dots \le 0`.
+    """
+    g_row = np.asarray([-1.0, 1.0])
+    a_ub = np.hstack([np.vstack([b, c]), -np.eye(2), -g_row[:, None]])
+    cost = np.r_[-y, upper, upper, 0.0]
+    lower = np.r_[-w, 0.0, 0.0, 0.0]
+    high = np.r_[w, np.inf, np.inf, np.inf]
+    res = linprog(
+        cost,
+        A_ub=a_ub,
+        b_ub=np.zeros(2),
+        bounds=np.column_stack([lower, high]),
+        method="highs-ds",
+    )
+    ok.append(bool(res.success))
+    if not res.success:
+        return np.nan, np.nan
+    x_f, x_r = (-float(m) for m in res.ineqlin.marginals)
+    # Clip round-off so the shape always satisfies the bounds exactly.
+    x_f = min(max(x_f, 0.0), upper)
+    x_r = min(max(x_r, 0.0), x_f)
+    return x_f, x_r
+
+
+def _weighted_l1_scale(y: FloatArr, b: FloatArr, w: FloatArr, lo: float, hi: float) -> float:
+    """The ``x`` in ``[lo, hi]`` that minimises ``sum(w * |y - x * b|)``.
+
+    Each term is ``w |b| |y / b - x|``, so the minimiser is the weighted
+    median of ``y / b`` with weights ``w |b|``. The sum is convex in ``x``,
+    so clipping to the bounds keeps it optimal.
+    """
+    m = (b != 0.0) & (w > 0.0)
+    if not bool(m.any()):
+        return lo
+    r = y[m] / b[m]
+    ww = w[m] * np.abs(b[m])
+    order = np.argsort(r)
+    cum = np.cumsum(ww[order])
+    x = float(r[order][int(np.searchsorted(cum, 0.5 * cum[-1]))])
+    return min(max(x, lo), hi)
+
+
+def _fit_knots_drop(
+    d: FloatArr,
+    f: FloatArr,
+    k_e: float,
+    d_f: float,
+    d_max: float,
+    f_peak: float,
+    ok: list[bool],
+) -> FloatArr:
+    """Fit ``f_y``, ``f_f`` and the drop to zero force; return the breakpoints.
+
+    The drop runs from ``(d_f, f_f)`` straight down to zero force at
+    ``d_zero``, so its slope is ``-f_f / (d_zero - d_f)``. For fixed ``f_y``
+    and ``d_zero`` the fit is linear in ``f_f``, and the best ``f_f`` is a
+    weighted median (:func:`_weighted_l1_scale`). ``d_zero`` is found by a
+    1-D search on a log scale of ``d_zero - d_f``, and ``f_y`` by an outer
+    1-D search. Only the data range ``[d_y, d_max]`` is scored; the fit may
+    reach zero beyond ``d_max``.
+    """
+    upper = 1.5 * f_peak
+    span = d_max - d_f
+
+    def best_f_f(f_y: float, d_zero: float) -> tuple[float, float]:
+        d_y = f_y / k_e
+        g = _knot_grid(d, d_y, d_max, [d_f, d_zero])
+        a = np.interp(g, [d_y, d_f], [1.0, 0.0])
+        b = np.interp(g, [d_y, d_f, d_zero], [0.0, 1.0, 0.0])
+        y = np.interp(g, d, f) - f_y * a
+        w = _trapezoid_weights(g)
+        f_f = _weighted_l1_scale(y, b, w, 0.0, upper)
+        return float(w @ np.abs(y - f_f * b)), f_f
+
+    def drop_end(f_y: float, inner_ok: list[bool]) -> tuple[float, float]:
+        z, err = _grid_then_brent(
+            lambda z: best_f_f(f_y, d_f + float(np.exp(z)))[0],
+            float(np.log(_DROP_SPAN_MIN * span)),
+            float(np.log(_DROP_SPAN_MAX * span)),
+            _KNOTS_DROP_GRID,
+            inner_ok,
         )
-    else:
-        bp = np.asarray(
-            [[0.0, 0.0], [d_y, f_y], [d_f, f_f], [d_r, f_r], [d_max, f_r]],
-            dtype=np.float64,
-        )
-    return bp, bool(res.success)
+        return d_f + float(np.exp(z)), err
+
+    inner_ok: list[bool] = []
+    f_y, _ = _grid_then_brent(
+        lambda x: drop_end(x, inner_ok)[1], 0.0, min(upper, k_e * d_f), _KNOTS_YIELD_GRID, ok
+    )
+    d_zero, _ = drop_end(f_y, inner_ok)
+    _, f_f = best_f_f(f_y, d_zero)
+    ok.append(all(inner_ok))
+
+    rows = [[0.0, 0.0], [f_y / k_e, f_y], [d_f, f_f], [d_zero, 0.0]]
+    if d_zero < d_max:
+        rows.append([d_max, 0.0])
+    return np.asarray(rows, dtype=np.float64)

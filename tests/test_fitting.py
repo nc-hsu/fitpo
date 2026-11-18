@@ -18,8 +18,8 @@ def test_auto_detects_quadrilinear(smooth_quadrilinear):
     expected = smooth_quadrilinear.expected_breaks
     assert expected is not None
     for (d_a, f_a), (d_e, f_e) in zip(fit, expected, strict=True):
-        assert _close(float(d_a), float(d_e), rel=0.15)
-        assert _close(float(f_a), float(f_e), rel=0.15)
+        assert _close(float(d_a), float(d_e), rel=0.04)
+        assert _close(float(f_a), float(f_e), rel=0.04)
 
 
 def test_auto_detects_trilinear(smooth_trilinear):
@@ -54,7 +54,7 @@ def test_staircase_recovers_plateau(staircase):
     expected = staircase.expected_breaks
     assert expected is not None
     f_p_expected = float(expected[3, 1])
-    assert _close(f_p, f_p_expected, rel=0.10), f"F_p={f_p}, expected~={f_p_expected}"
+    assert _close(f_p, f_p_expected, rel=0.05), f"F_p={f_p}, expected~={f_p_expected}"
 
 
 def test_peak_at_end_raises_for_tri_quadri_auto(peak_at_end):

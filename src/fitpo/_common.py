@@ -7,12 +7,22 @@ the public :func:`area_error` helper built on it, and the small input
 reshaping step all fitting functions share.
 """
 
+import warnings
+from collections.abc import Callable
 from typing import Literal, NamedTuple
 
 import numpy as np
 import numpy.typing as npt
+from scipy.optimize import minimize_scalar
 
 FloatArr = npt.NDArray[np.float64]
+
+# How many of the best grid minima _grid_then_brent refines with Brent.
+_REFINED_MINIMA = 3
+
+# Brent tolerance as a fraction of each search interval, so precision does not
+# depend on the units of the data.
+_REL_XTOL = 1e-9
 
 # How a curve whose first point is not (0, 0) is handled:
 # - "strict": refuse the curve, with an error saying how far out it is;
@@ -123,6 +133,41 @@ def _as_curve(
     return d, f
 
 
+def _finish(
+    bp: FloatArr,
+    mode: str,
+    objective: float,
+    converged: bool,
+    func_name: str,
+) -> FitResult:
+    """Check a fitted shape, warn if an optimiser failed, and package the result.
+
+    Exact duplicate rows (a segment of zero length) are dropped first, since
+    they carry no information. The shape is then checked against the rules
+    every fit must meet, so an impossible shape is never returned silently:
+    all values finite; displacement strictly increasing from row to row; and
+    the yield point (row 1) at a positive displacement.
+    """
+    keep = np.ones(len(bp), dtype=bool)
+    keep[1:] = np.any(np.diff(bp, axis=0) != 0.0, axis=1)
+    bp = bp[keep]
+
+    where = f"{func_name} (mode {mode!r})"
+    if not bool(np.isfinite(bp).all()) or not np.isfinite(objective):
+        raise ValueError(f"{where} produced a fit with NaN or inf values:\n{bp}")
+    if len(bp) < 2 or bp[1, 0] <= 0.0:
+        raise ValueError(f"{where} produced a yield displacement <= 0:\n{bp}")
+    if bool((np.diff(bp[:, 0]) <= 0.0).any()):
+        raise ValueError(f"{where} produced breakpoints whose displacement doesn't increase:\n{bp}")
+    if not converged:
+        # stacklevel=3: point at the user's call, not at this helper or the fit function.
+        warnings.warn(
+            f"{where}: an optimiser did not report convergence; check the fit",
+            stacklevel=3,
+        )
+    return FitResult(bp, mode, float(objective), converged)
+
+
 def _interval_area_error(
     d: FloatArr, f: FloatArr, fitted_po: FloatArr, d_lo: float, d_hi: float
 ) -> float:
@@ -210,3 +255,41 @@ def area_error(
     if normalised:
         return err / _area_error(d, f, np.zeros_like(f))
     return err
+
+
+def _grid_then_brent(
+    fun: Callable[[float], float],
+    lo: float,
+    hi: float,
+    n_grid: int,
+    ok: list[bool],
+) -> tuple[float, float]:
+    """Minimise ``fun`` over the open interval ``(lo, hi)``; return ``(x, fun(x))``.
+
+    A coarse grid of ``n_grid`` interior points finds the basins, then a
+    bounded Brent search refines each of the best few local minima of the
+    grid between its grid neighbours.
+    Refining several matters because two basins can be nearly tied on the
+    grid while their true minima differ. Neither step evaluates the interval
+    ends, which are invalid shapes in every use here.
+    """
+    xs = np.linspace(lo, hi, n_grid + 2)[1:-1]
+    vals = np.asarray([fun(float(x)) for x in xs])
+    # Local minima of the grid (a point no higher than its neighbours).
+    padded = np.concatenate(([np.inf], vals, [np.inf]))
+    is_min = (vals <= padded[:-2]) & (vals <= padded[2:])
+    candidates = np.flatnonzero(is_min)
+    candidates = candidates[np.argsort(vals[candidates])][:_REFINED_MINIMA]
+
+    best_x, best_f = float(xs[candidates[0]]), float(vals[candidates[0]])
+    for i in candidates:
+        a = float(xs[i - 1]) if i > 0 else lo
+        b = float(xs[i + 1]) if i < len(xs) - 1 else hi
+        res = minimize_scalar(
+            fun, bounds=(a, b), method="bounded", options={"xatol": _REL_XTOL * (hi - lo)}
+        )
+        ok.append(bool(res.success))
+        # Brent is only a local search: keep the grid point if it was better.
+        if float(res.fun) < best_f:
+            best_x, best_f = float(res.x), float(res.fun)
+    return best_x, best_f
