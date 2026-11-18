@@ -1,11 +1,11 @@
-"""Tests for fit_piecewise_backbone."""
+"""Tests for fit_deluca_backbone and fit_bilinear_backbone."""
 
 from __future__ import annotations
 
 import numpy as np
 import pytest
 
-from fitpo import fit_piecewise_backbone
+from fitpo import fit_bilinear_backbone, fit_deluca_backbone
 
 
 def _close(actual: float, expected: float, rel: float) -> bool:
@@ -13,7 +13,7 @@ def _close(actual: float, expected: float, rel: float) -> bool:
 
 
 def test_auto_detects_quadrilinear(smooth_quadrilinear):
-    fit = fit_piecewise_backbone(smooth_quadrilinear.curve)
+    fit = fit_deluca_backbone(smooth_quadrilinear.curve).fitted_po
     assert fit.shape == (5, 2)
     expected = smooth_quadrilinear.expected_breaks
     assert expected is not None
@@ -23,22 +23,22 @@ def test_auto_detects_quadrilinear(smooth_quadrilinear):
 
 
 def test_auto_detects_trilinear(smooth_trilinear):
-    fit = fit_piecewise_backbone(smooth_trilinear.curve)
+    fit = fit_deluca_backbone(smooth_trilinear.curve).fitted_po
     assert fit.shape == (4, 2)
 
 
 def test_force_quadrilinear_over_trilinear_curve(smooth_trilinear):
-    fit = fit_piecewise_backbone(smooth_trilinear.curve, mode="quadrilinear")
+    fit = fit_deluca_backbone(smooth_trilinear.curve, mode="quadrilinear-deluca").fitted_po
     assert fit.shape == (5, 2)
 
 
 def test_force_trilinear_over_quadrilinear_curve(smooth_quadrilinear):
-    fit = fit_piecewise_backbone(smooth_quadrilinear.curve, mode="trilinear")
+    fit = fit_deluca_backbone(smooth_quadrilinear.curve, mode="trilinear-deluca").fitted_po
     assert fit.shape == (4, 2)
 
 
 def test_bilinear(bilinear_source):
-    fit = fit_piecewise_backbone(bilinear_source.curve, mode="bilinear")
+    fit = fit_bilinear_backbone(bilinear_source.curve, mode="bilinear-80pct").fitted_po
     assert fit.shape == (3, 2)
     assert np.allclose(fit[0], [0.0, 0.0])
     d_y, f_y = fit[1]
@@ -48,7 +48,7 @@ def test_bilinear(bilinear_source):
 
 
 def test_staircase_recovers_plateau(staircase):
-    fit = fit_piecewise_backbone(staircase.curve)
+    fit = fit_deluca_backbone(staircase.curve).fitted_po
     assert fit.shape == (5, 2)
     f_p = float(fit[3, 1])
     expected = staircase.expected_breaks
@@ -58,14 +58,16 @@ def test_staircase_recovers_plateau(staircase):
 
 
 def test_peak_at_end_raises_for_tri_quadri_auto(peak_at_end):
-    for mode in (None, "trilinear", "quadrilinear"):
+    for mode in ("auto", "trilinear-deluca", "quadrilinear-deluca"):
         with pytest.raises(ValueError):
-            fit_piecewise_backbone(peak_at_end.curve, mode=mode)
+            fit_deluca_backbone(peak_at_end.curve, mode=mode)
 
 
 def test_contract_all_modes(smooth_quadrilinear):
-    for mode in (None, "bilinear", "trilinear", "quadrilinear"):
-        fit = fit_piecewise_backbone(smooth_quadrilinear.curve, mode=mode)
+    fits = [fit_bilinear_backbone(smooth_quadrilinear.curve, mode="bilinear-80pct").fitted_po]
+    for mode in ("auto", "trilinear-deluca", "quadrilinear-deluca"):
+        fits.append(fit_deluca_backbone(smooth_quadrilinear.curve, mode=mode).fitted_po)
+    for fit in fits:
         assert fit.ndim == 2
         assert fit.shape[1] == 2
         assert np.allclose(fit[0], [0.0, 0.0])

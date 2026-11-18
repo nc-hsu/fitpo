@@ -1,6 +1,12 @@
-"""Fit piecewise-linear positive and negative envelopes to cyclic pushover data."""
+"""Positive and negative envelopes of cyclic pushover data.
 
-from __future__ import annotations
+A cyclic pushover trace goes back and forth in displacement, so it has no
+single backbone. This module extracts one piecewise-linear envelope for the
+positive side and one for the negative side, using one of several rules for
+which trace points to keep (cycle peaks, the loading front, displacement
+bins, or simplifications of these). The envelopes can then be fitted with
+the backbone functions like a monotonic pushover curve.
+"""
 
 from typing import Literal
 

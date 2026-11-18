@@ -1,54 +1,68 @@
-"""Fit 4-segment piecewise-linear backbones to CBF-style pushover curves."""
+"""Backbone fits for concentrically braced frame (CBF) pushover curves.
 
-from __future__ import annotations
+A CBF pushover curve typically rises elastically, softens as the
+compression braces buckle, then drops suddenly when a brace fractures and
+settles on a lower residual branch. The De Luca fits cannot represent that
+sudden drop, so this module offers two fits built around it:
+
+- :func:`fit_cbf_cusum_backbone` finds the fracture drop automatically with
+  a CUSUM change detector on the slope of the curve, then fits the
+  post-buckling and residual lines around it.
+- :func:`fit_cbf_knots_backbone` places the two knots of the drop either at
+  force fractions of the peak or at given displacements, and fits all knot
+  forces together by area minimisation.
+"""
+
+from typing import Literal
 
 import numpy as np
 import numpy.typing as npt
 from scipy.optimize import minimize, minimize_scalar
 
-from fitpo.fitting import elastic_slope
+from fitpo._common import FitResult, FloatArr, _area_error, _as_curve, _interval_area_error
+from fitpo._deluca import elastic_slope
 
-FloatArr = npt.NDArray[np.float64]
+type CbfCusumMode = Literal["quadrilinear-cbf-cusum"]
+type CbfKnotsMode = Literal["quadrilinear-cbf-knots", "trilinear-cbf-knots"]
 
 
-def fit_cbf_backbone(
+def fit_cbf_cusum_backbone(
     pushover: npt.ArrayLike,
     *,
     cusum_threshold: float = 4.0,
     cusum_drift: float = 0.5,
     cusum_search_start_fraction: float = 0.25,
-) -> FloatArr:
-    """Fit a 4-segment backbone to a CBF-style pushover curve.
+    elastic_ref_fraction: float = 0.10,
+) -> FitResult:
+    """Fit a 4-segment backbone to a CBF pushover curve, locating fracture by CUSUM.
 
     Parameters
     ----------
     pushover
-        Shape (N, 2): col 0 displacement (monotone), col 1 force.
+        ``(N, 2)`` curve: column 0 displacement (increasing), column 1 force.
     cusum_threshold
-        CUSUM trigger threshold on standardised velocity.
+        CUSUM trigger threshold on the standardised slope of the curve.
     cusum_drift
-        CUSUM drift parameter on standardised velocity.
+        CUSUM drift parameter on the standardised slope of the curve.
     cusum_search_start_fraction
-        CUSUM begins searching at the first sample where d >= d_max * fraction.
-        Raise for curves with pre-fracture noise (e.g. minor local drops).
+        CUSUM starts searching at the first sample with
+        ``d >= d_max * cusum_search_start_fraction``. Raise it for curves
+        with small force drops before the fracture.
+    elastic_ref_fraction
+        The elastic stiffness is the secant to this fraction of the peak
+        force on the rising branch.
 
     Returns
     -------
-    (5, 2) float64 ndarray of breakpoints:
-    [[0, 0], [d_y, f_y], [d_joint, f_joint], [d_r2, f_r2], [d_max, f_end]]
-
-    Rows 2 and 3 lie on the CUSUM-derived fracture-drop line; their
-    displacements are chosen so segments 2 and 4 each minimise their absolute
-    area error against the data.
+    FitResult
+        ``fitted_po`` has 5 rows:
+        ``[[0, 0], [d_y, f_y], [d_joint, f_joint], [d_r2, f_r2], [d_max, f_end]]``.
+        Rows 2 and 3 lie on the fracture-drop line found by CUSUM; the other
+        knots are chosen so segments 2 and 4 each minimise their area error
+        against the data. ``mode`` is ``"quadrilinear-cbf-cusum"``;
+        ``objective`` is the area error over ``[d_y, d_max]``.
     """
-    arr = np.asarray(pushover, dtype=np.float64)
-    if arr.ndim != 2 or arr.shape[1] != 2:
-        raise ValueError(f"pushover must be shape (N, 2); got {arr.shape}")
-    if arr.shape[0] < 5:
-        raise ValueError("pushover must have at least 5 points")
-
-    d: FloatArr = arr[:, 0]
-    f: FloatArr = arr[:, 1]
+    d, f = _as_curve(pushover, 5)
     n = len(d)
 
     i_peak = int(np.argmax(f))
@@ -58,42 +72,52 @@ def fit_cbf_backbone(
     if i_peak >= n - 1:
         raise ValueError("No descending branch: peak is at the last data point")
 
-    k_e = elastic_slope(d[: i_peak + 1], f[: i_peak + 1], f_peak)
+    k_e = elastic_slope(d[: i_peak + 1], f[: i_peak + 1], f_peak, ref_fraction=elastic_ref_fraction)
 
     d_max = float(d[-1])
     search_start_d = d_max * cusum_search_start_fraction
     i_f, i_r = _detect_fracture_region(
-        d, f, search_start_d, cusum_threshold, cusum_drift,
+        d,
+        f,
+        search_start_d,
+        cusum_threshold,
+        cusum_drift,
     )
 
     d_f, f_f = float(d[i_f]), float(f[i_f])
     d_r, f_r = float(d[i_r]), float(f[i_r])
 
+    # Success flags of every optimiser call, so `converged` covers all of them.
+    ok: list[bool] = []
     _k_pb, d_y, f_y, d_joint, f_joint = _fit_post_buckling(
-        d, f, d_f, f_f, d_r, f_r, k_e, f_peak,
+        d, f, d_f, f_f, d_r, f_r, k_e, f_peak, ok
     )
-    _k_r, d_r2, f_r2, f_end = _fit_residual(d, f, d_r, f_r, d_max)
+    _k_r, d_r2, f_r2, f_end = _fit_residual(d, f, d_r, f_r, d_max, ok)
 
-    return np.asarray(
+    bp = np.asarray(
         [[0.0, 0.0], [d_y, f_y], [d_joint, f_joint], [d_r2, f_r2], [d_max, f_end]],
         dtype=np.float64,
     )
+    return FitResult(
+        bp, "quadrilinear-cbf-cusum", _interval_area_error(d, f, bp, d_y, d_max), all(ok)
+    )
 
 
-def fit_tetralinear_backbone(
+def fit_cbf_knots_backbone(
     pushover: npt.ArrayLike,
     *,
     joint_force_fraction: float = 0.80,
     residual_force_fraction: float = 0.05,
-    collapse_residual: bool = False,
+    residual_plateau: bool = True,
     d_f: float | None = None,
     d_r: float | None = None,
-) -> FloatArr:
-    """Fit a tetralinear backbone by joint-area minimisation.
+    elastic_ref_fraction: float = 0.10,
+) -> FitResult:
+    """Fit a CBF backbone with fixed knot displacements by joint area minimisation.
 
-    Segments: elastic (0 -> y), post-yield decline (y -> f), cliff
-    (f -> r), and a horizontal residual (r -> max). ``f_y``, ``f_f`` and
-    ``f_r`` are obtained by jointly minimising the absolute area between
+    Segments: elastic (0 -> y), post-buckling decline (y -> f), fracture
+    drop (f -> r), and a horizontal residual plateau (r -> max). ``f_y``,
+    ``f_f`` and ``f_r`` are found together by minimising the area between
     segments 2-4 and the data over ``[d_y, d_max]``.
 
     The two interior knot *displacements* can be set either way:
@@ -117,7 +141,7 @@ def fit_tetralinear_backbone(
     Parameters
     ----------
     pushover
-        Shape (N, 2): col 0 displacement (monotone), col 1 force.
+        ``(N, 2)`` curve: column 0 displacement (increasing), column 1 force.
     joint_force_fraction
         Target for ``d_f`` is ``fraction * f_peak``; default 0.80.
         Ignored when ``d_f``/``d_r`` are given.
@@ -125,45 +149,40 @@ def fit_tetralinear_backbone(
         Target for ``d_r`` is ``fraction * f_peak``; default 0.05.
         Must satisfy ``0 < residual_force_fraction < joint_force_fraction < 1``.
         Ignored when ``d_f``/``d_r`` are given.
-    collapse_residual
-        If True, segment 3 is extended with its own slope down to
-        ``f = 0`` and segment 4 is dropped (trilinear shape, padded to
-        5x2 by repeating the endpoint).
+    residual_plateau
+        If ``True`` (default), the curve ends on a horizontal residual
+        plateau. If ``False``, there is no plateau: the fracture drop
+        continues with its own slope down to zero force.
     d_f, d_r
         Interior knot displacements, in the units of column 0. Give both
         or neither; they must satisfy ``0 < d_f < d_r <= d_max``. Giving
         them bypasses the force-fraction snapping entirely.
+    elastic_ref_fraction
+        The elastic stiffness is the secant to this fraction of the peak
+        force on the rising branch.
 
     Returns
     -------
-    (5, 2) float64 ndarray of breakpoints:
-    Default: ``[[0, 0], [d_y, f_y], [d_f, f_f], [d_r, f_r], [d_max, f_r]]``.
-    Collapse: ``[[0, 0], [d_y, f_y], [d_f, f_f], [d_zero, 0], [d_zero, 0]]``.
+    FitResult
+        With ``residual_plateau=True``: ``mode`` is
+        ``"quadrilinear-cbf-knots"`` and ``fitted_po`` is
+        ``[[0, 0], [d_y, f_y], [d_f, f_f], [d_r, f_r], [d_max, f_r]]``.
+        With ``residual_plateau=False``: ``mode`` is
+        ``"trilinear-cbf-knots"`` and ``fitted_po`` is
+        ``[[0, 0], [d_y, f_y], [d_f, f_f], [d_zero, 0], [d_zero, 0]]``.
+        ``objective`` is the area error over ``[d_y, d_max]``.
 
     Notes
     -----
     ``d_y`` is not an independent parameter: it is ``f_y / k_e``, with
-    ``k_e`` the secant stiffness at ``ELASTIC_REF_FRACTION`` of the peak
-    force on the ascending branch. Setting ``d_f``/``d_r`` therefore gives
+    ``k_e`` the secant stiffness at ``elastic_ref_fraction`` of the peak
+    force on the rising branch. Setting ``d_f``/``d_r`` therefore gives
     no control over ``d_y``.
     """
-    explicit_knots = d_f is not None or d_r is not None
-    if explicit_knots and (d_f is None or d_r is None):
+    if (d_f is None) != (d_r is None):
         raise ValueError("Give both d_f and d_r, or neither")
 
-    arr = np.asarray(pushover, dtype=np.float64)
-    if arr.ndim != 2 or arr.shape[1] != 2:
-        raise ValueError(f"pushover must be shape (N, 2); got {arr.shape}")
-    if arr.shape[0] < 5:
-        raise ValueError("pushover must have at least 5 points")
-    # The fractions are only meaningful on the snapping path.
-    if not explicit_knots and not 0.0 < residual_force_fraction < joint_force_fraction < 1.0:
-        raise ValueError(
-            "Require 0 < residual_force_fraction < joint_force_fraction < 1"
-        )
-
-    d: FloatArr = arr[:, 0]
-    f: FloatArr = arr[:, 1]
+    d, f = _as_curve(pushover, 5)
     n = len(d)
 
     i_peak = int(np.argmax(f))
@@ -173,45 +192,55 @@ def fit_tetralinear_backbone(
     if i_peak >= n - 1:
         raise ValueError("No descending branch: peak is at the last data point")
 
-    k_e = elastic_slope(d[: i_peak + 1], f[: i_peak + 1], f_peak)
+    k_e = elastic_slope(d[: i_peak + 1], f[: i_peak + 1], f_peak, ref_fraction=elastic_ref_fraction)
     d_max = float(d[-1])
 
-    if explicit_knots:
+    if d_f is not None and d_r is not None:
         # Knots given directly: no snapping, so they need not be data points.
         # Seed the inner solver from the curve at those displacements, which is
         # what the snapping path passes from the points it landed on.
-        d_f = float(d_f)
-        d_r = float(d_r)
-        if not 0.0 < d_f < d_r <= d_max:
+        d_f_knot = float(d_f)
+        d_r_knot = float(d_r)
+        if not 0.0 < d_f_knot < d_r_knot <= d_max:
             raise ValueError(
-                f"Require 0 < d_f < d_r <= d_max; got d_f={d_f:.6g}, "
-                f"d_r={d_r:.6g}, d_max={d_max:.6g}"
+                f"Require 0 < d_f < d_r <= d_max; got d_f={d_f_knot:.6g}, "
+                f"d_r={d_r_knot:.6g}, d_max={d_max:.6g}"
             )
-        f_f_init = float(np.interp(d_f, d, f))
-        f_r_init = float(np.interp(d_r, d, f))
+        f_f_init = float(np.interp(d_f_knot, d, f))
+        f_r_init = float(np.interp(d_r_knot, d, f))
     else:
+        # The fractions are only meaningful on the snapping path.
+        if not 0.0 < residual_force_fraction < joint_force_fraction < 1.0:
+            raise ValueError("Require 0 < residual_force_fraction < joint_force_fraction < 1")
         i_f = _snap_descending_crossing(f, i_peak, joint_force_fraction * f_peak)
         if i_f is None:
-            raise ValueError(
-                "No descending crossing of joint_force_fraction * f_peak"
-            )
+            raise ValueError("No descending crossing of joint_force_fraction * f_peak")
         i_r = _snap_descending_crossing(f, i_f, residual_force_fraction * f_peak)
         if i_r is None:
             i_r = n - 1
         if i_f >= i_r:
             raise ValueError("d_f must precede d_r; choose different fractions")
 
-        d_f = float(d[i_f])
-        d_r = float(d[i_r])
+        d_f_knot = float(d[i_f])
+        d_r_knot = float(d[i_r])
         f_f_init = float(f[i_f])
         f_r_init = float(f[i_r])
 
-    return _fit_tetra_free(
-        d, f, k_e, d_f, d_r, d_max, f_peak,
+    bp, success = _fit_tetra_free(
+        d,
+        f,
+        k_e,
+        d_f_knot,
+        d_r_knot,
+        d_max,
+        f_peak,
         f_f_init=f_f_init,
         f_r_init=f_r_init,
-        collapse_residual=collapse_residual,
+        collapse_residual=not residual_plateau,
     )
+    mode = "quadrilinear-cbf-knots" if residual_plateau else "trilinear-cbf-knots"
+    d_y = float(bp[1, 0])
+    return FitResult(bp, mode, _interval_area_error(d, f, bp, d_y, d_max), success)
 
 
 # ---------------------------------------------------------------------------
@@ -297,16 +326,13 @@ def _detect_fracture_region(
 # ---------------------------------------------------------------------------
 
 
-def _area_error(d: FloatArr, f_exact: FloatArr, f_fit: FloatArr) -> float:
-    return float(np.trapezoid(np.abs(f_exact - f_fit), d))
-
-
 def _fit_kpb_at(
     d: FloatArr,
     f: FloatArr,
     d_joint: float,
     f_joint: float,
     k_e: float,
+    ok: list[bool],
 ) -> tuple[float, float, float, float]:
     """Inner: 1-D Brent over k_pb, post-buckling line pinned at (d_joint, f_joint).
 
@@ -334,6 +360,7 @@ def _fit_kpb_at(
         return k_pb, d_y, k_e * d_y, _segment_area(d, f, d_y, d_joint, f_joint, k_pb)
 
     res = minimize_scalar(obj, bounds=(k_pb_min, k_pb_max), method="bounded")
+    ok.append(bool(res.success))
     k_pb = float(res.x)
     denom = k_e - k_pb
     if denom <= 0.0:
@@ -370,6 +397,7 @@ def _fit_post_buckling(
     f_r: float,
     k_e: float,
     f_peak: float,
+    ok: list[bool],
 ) -> tuple[float, float, float, float, float]:
     """Free f_joint fitting; d_joint = d_f fixed.
 
@@ -382,19 +410,21 @@ def _fit_post_buckling(
     f_joint_min = f_r + 1e-6
 
     if f_joint_min >= f_joint_max:
-        k_pb, d_y, f_y, _ = _fit_kpb_at(d, f, d_f, f_r, k_e)
+        k_pb, d_y, f_y, _ = _fit_kpb_at(d, f, d_f, f_r, k_e, ok)
         return k_pb, d_y, f_y, d_f, f_r
 
     def outer_obj(f_joint: float) -> float:
         k3 = (f_r - f_joint) / max(d_r - d_f, 1e-9)
-        k_pb, _d_y, _f_y, area2 = _fit_kpb_at(d, f, d_f, f_joint, k_e)
+        k_pb, _d_y, _f_y, area2 = _fit_kpb_at(d, f, d_f, f_joint, k_e, ok)
         mask = (d >= d_f) & (d <= d_r)
-        area3 = _area_error(d[mask], f[mask], f_joint + k3 * (d[mask] - d_f)) if bool(mask.any()) else 0.0
-        return area2 + area3
+        if not bool(mask.any()):
+            return area2
+        return area2 + _area_error(d[mask], f[mask], f_joint + k3 * (d[mask] - d_f))
 
     res = minimize_scalar(outer_obj, bounds=(f_joint_min, f_joint_max), method="bounded")
+    ok.append(bool(res.success))
     f_joint = float(res.x)
-    k_pb, d_y, f_y, _ = _fit_kpb_at(d, f, d_f, f_joint, k_e)
+    k_pb, d_y, f_y, _ = _fit_kpb_at(d, f, d_f, f_joint, k_e, ok)
     return k_pb, d_y, f_y, d_f, f_joint
 
 
@@ -404,6 +434,7 @@ def _fit_kr_at(
     d_r2: float,
     f_r2: float,
     d_max: float,
+    ok: list[bool],
 ) -> tuple[float, float, float]:
     """Inner: 1-D Brent over k_r ≤ 0, residual line pinned at (d_r2, f_r2).
 
@@ -422,6 +453,7 @@ def _fit_kr_at(
         return _area_error(d[mask], f[mask], f_r2 + k_r * (d[mask] - d_r2))
 
     res = minimize_scalar(obj, bounds=(k_r_min, 0.0), method="bounded")
+    ok.append(bool(res.success))
     k_r = float(res.x)
     return k_r, f_r2 + k_r * span, float(res.fun)
 
@@ -432,6 +464,7 @@ def _fit_residual(
     d_r: float,
     f_r: float,
     d_max: float,
+    ok: list[bool],
 ) -> tuple[float, float, float, float]:
     """Vertical sliding: d_r2 = d_r fixed, f_r2 free in (1e-6, f_r).
 
@@ -442,11 +475,12 @@ def _fit_residual(
         return 0.0, d_r, f_r, f_r
 
     def outer_obj(f_r2: float) -> float:
-        return _fit_kr_at(d, f, d_r, f_r2, d_max)[2]
+        return _fit_kr_at(d, f, d_r, f_r2, d_max, ok)[2]
 
     res = minimize_scalar(outer_obj, bounds=(1e-6, 2 * f_r), method="bounded")
+    ok.append(bool(res.success))
     f_r2 = float(res.x)
-    k_r, f_end, _ = _fit_kr_at(d, f, d_r, f_r2, d_max)
+    k_r, f_end, _ = _fit_kr_at(d, f, d_r, f_r2, d_max, ok)
     return k_r, d_r, f_r2, f_end
 
 
@@ -462,8 +496,8 @@ def _fit_tetra_free(
     f_f_init: float,
     f_r_init: float,
     collapse_residual: bool,
-) -> FloatArr:
-    """Joint L-BFGS-B over (f_y, f_f, f_r); returns 5x2 breakpoints."""
+) -> tuple[FloatArr, bool]:
+    """Joint L-BFGS-B over (f_y, f_f, f_r); return 5x2 breakpoints and success."""
     upper = 1.5 * f_peak
     penalty = 1e3 * f_peak * max(d_max, 1.0)
 
@@ -526,11 +560,13 @@ def _fit_tetra_free(
         if k3 >= 0.0:
             k3 = -1e-12
         d_zero = d_f - f_f / k3
-        return np.asarray(
+        bp = np.asarray(
             [[0.0, 0.0], [d_y, f_y], [d_f, f_f], [d_zero, 0.0], [d_zero, 0.0]],
             dtype=np.float64,
         )
-    return np.asarray(
-        [[0.0, 0.0], [d_y, f_y], [d_f, f_f], [d_r, f_r], [d_max, f_r]],
-        dtype=np.float64,
-    )
+    else:
+        bp = np.asarray(
+            [[0.0, 0.0], [d_y, f_y], [d_f, f_f], [d_r, f_r], [d_max, f_r]],
+            dtype=np.float64,
+        )
+    return bp, bool(res.success)
