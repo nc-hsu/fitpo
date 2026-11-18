@@ -71,8 +71,10 @@ instance/
 # Scrapy stuff:
 .scrapy
 
-# Sphinx documentation
+# Sphinx documentation (the build output, which also holds the MyST-NB
+# notebook cache, and the API pages autosummary generates)
 docs/_build/
+docs/generated/
 
 # PyBuilder
 .pybuilder/

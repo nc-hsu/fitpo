@@ -57,7 +57,7 @@ def fit_envelope(
         - ``"peak-to-peak"`` (default): detect cycle peaks and draw straight
           lines between them. Fast, but bridges over any mid-loading force
           drop (fracture).
-        - ``"loading-front"``: keep every trace point whose |displacement|
+        - ``"loading-front"``: keep every trace point whose absolute displacement
           exceeds all earlier points in time (the loading frontier). Follows
           the real loading branch, so fracture drops are captured.
         - ``"displacement-bins"``: bin the displacement range into steps of
@@ -82,11 +82,11 @@ def fit_envelope(
         Only used when ``mode="displacement-bins"``.
     simplify_tolerance
         Deviation threshold for ``mode="simplified-loading-front"``, as a fraction of
-        the side's max |force| (default ``0.05``). Loading-front points whose
+        the side's largest absolute force (default ``0.05``). Loading-front points whose
         force deviates from the local chord by more than
         ``simplify_tolerance * max|force|`` are kept; smaller wiggles are dropped.
     include_final_peak
-        If ``True`` and the last trace point is the largest |displacement| on
+        If ``True`` and the last trace point has the largest absolute displacement on
         its side, treat that final point as a peak/breakpoint. Mainly relevant
         for ``"peak-to-peak"`` (``find_peaks`` never flags an endpoint); the
         other modes include it naturally.
@@ -94,9 +94,9 @@ def fit_envelope(
         If ``True``, append a final breakpoint at ``(extreme_displacement, 0)``
         so the envelope drops to zero force at the largest displacement.
     displacement_tolerance
-        Fraction of max |displacement|. Two cycle peaks within
+        Fraction of the largest absolute displacement. Two cycle peaks within
         ``displacement_tolerance * max(|d|)`` are treated as the same
-        amplitude; only the one with the largest |force| is kept. Also the
+        amplitude; only the one with the largest absolute force is kept. Also the
         tolerance for detecting whether the final point is the side extreme.
     peak_prominence
         Absolute prominence passed to ``scipy.signal.find_peaks`` (only used by
@@ -104,10 +104,12 @@ def fit_envelope(
 
     Returns
     -------
-    (positive_envelope, negative_envelope)
-        Each (M, 2) float64 ndarray of breakpoints starting at ``[0, 0]``. The
-        positive envelope has positive displacements/forces; the negative
-        envelope has negative displacements/forces.
+    positive_envelope : numpy.ndarray
+        ``(M, 2)`` breakpoints starting at ``[0, 0]``, with positive
+        displacements and forces.
+    negative_envelope : numpy.ndarray
+        ``(M, 2)`` breakpoints starting at ``[0, 0]``, with negative
+        displacements and forces (the signs of the data are kept).
 
     Raises
     ------
