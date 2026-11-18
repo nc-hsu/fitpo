@@ -25,7 +25,10 @@ def _sample_piecewise(breaks: np.ndarray, n: int = 401) -> tuple[np.ndarray, np.
 
 def _add_noise(f: np.ndarray, f_peak: float, seed: int, fraction: float = 0.01) -> np.ndarray:
     rng = np.random.default_rng(seed)
-    return f + rng.normal(0.0, fraction * f_peak, size=f.shape)
+    noisy = f + rng.normal(0.0, fraction * f_peak, size=f.shape)
+    # The unloaded first point is exact in real data, so keep it at zero force.
+    noisy[0] = f[0]
+    return noisy
 
 
 def build_smooth_quadrilinear() -> Fixture:

@@ -59,6 +59,7 @@ def test_cbf_cusum_mode():
     ys = [0.0, 500.0, 350.0, 100.0, 80.0]
     d = np.linspace(0.0, 120.0, 801)
     f = np.interp(d, xs, ys) + np.random.default_rng(7).normal(0.0, 3.5, d.size)
+    f[0] = 0.0  # the unloaded first point is exact
     res = fitpo.fit_cbf_cusum_backbone(np.column_stack([d, f]))
     assert res.mode == "quadrilinear-cbf-cusum"
 
@@ -100,11 +101,12 @@ def test_area_error_known_value_and_normalised():
     # matches, so the error is a triangle of area 0.5 * 2 * 10 = 10.
     curve = np.asarray([[0.0, 10.0], [4.0, 10.0]])
     bp = np.asarray([[0.0, 0.0], [2.0, 10.0], [4.0, 10.0]])
-    assert area_error(curve, bp) == pytest.approx(10.0)
+    # origin="as-is": the curve's non-zero first force is the point here.
+    assert area_error(curve, bp, origin="as-is") == pytest.approx(10.0)
     # Area under the curve is 40.
-    assert area_error(curve, bp, normalised=True) == pytest.approx(0.25)
+    assert area_error(curve, bp, normalised=True, origin="as-is") == pytest.approx(0.25)
 
 
 def test_area_error_checks_fitted_shape():
-    with pytest.raises(ValueError, match=r"\(M, 2\)"):
+    with pytest.raises(ValueError, match="fitted_po must be shape"):
         area_error(np.zeros((5, 2)), np.zeros((3, 3)))

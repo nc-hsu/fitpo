@@ -35,6 +35,7 @@ def _sample_cbf_curve(
     f_clean = np.interp(d, breaks[:, 0], breaks[:, 1])
     rng = np.random.default_rng(seed)
     f = f_clean + rng.normal(0.0, noise_fraction * f_f, size=n)
+    f[0] = 0.0  # the unloaded first point is exact
     return np.column_stack([d, f])
 
 
@@ -46,14 +47,14 @@ def _sample_cbf_curve(
 @pytest.mark.parametrize("csv_path", CSV_PATHS, ids=[p.stem for p in CSV_PATHS])
 def test_output_shape(csv_path: Path) -> None:
     data = np.loadtxt(csv_path, delimiter=",")
-    fit = fit_cbf_cusum_backbone(data).fitted_po
+    fit = fit_cbf_cusum_backbone(data, origin="correct_disp").fitted_po
     assert fit.shape == (5, 2)
 
 
 @pytest.mark.parametrize("csv_path", CSV_PATHS, ids=[p.stem for p in CSV_PATHS])
 def test_displacements_increasing(csv_path: Path) -> None:
     data = np.loadtxt(csv_path, delimiter=",")
-    fit = fit_cbf_cusum_backbone(data).fitted_po
+    fit = fit_cbf_cusum_backbone(data, origin="correct_disp").fitted_po
     diffs = np.diff(fit[:, 0])
     assert (diffs > 0).all(), f"Non-increasing displacements: {fit[:, 0]}"
 
@@ -61,14 +62,14 @@ def test_displacements_increasing(csv_path: Path) -> None:
 @pytest.mark.parametrize("csv_path", CSV_PATHS, ids=[p.stem for p in CSV_PATHS])
 def test_origin_at_zero(csv_path: Path) -> None:
     data = np.loadtxt(csv_path, delimiter=",")
-    fit = fit_cbf_cusum_backbone(data).fitted_po
+    fit = fit_cbf_cusum_backbone(data, origin="correct_disp").fitted_po
     assert np.allclose(fit[0], [0.0, 0.0])
 
 
 @pytest.mark.parametrize("csv_path", CSV_PATHS, ids=[p.stem for p in CSV_PATHS])
 def test_fracture_drop_positive(csv_path: Path) -> None:
     data = np.loadtxt(csv_path, delimiter=",")
-    fit = fit_cbf_cusum_backbone(data).fitted_po
+    fit = fit_cbf_cusum_backbone(data, origin="correct_disp").fitted_po
     # Force at fracture start > force at residual start
     assert fit[2, 1] > fit[3, 1], "Fracture drop must be a force decrease"
 
@@ -76,7 +77,7 @@ def test_fracture_drop_positive(csv_path: Path) -> None:
 @pytest.mark.parametrize("csv_path", CSV_PATHS, ids=[p.stem for p in CSV_PATHS])
 def test_residual_slope_nonpositive(csv_path: Path) -> None:
     data = np.loadtxt(csv_path, delimiter=",")
-    fit = fit_cbf_cusum_backbone(data).fitted_po
+    fit = fit_cbf_cusum_backbone(data, origin="correct_disp").fitted_po
     d_r, f_r = fit[3]
     d_max, f_end = fit[4]
     slope = (f_end - f_r) / max(d_max - d_r, 1e-12)

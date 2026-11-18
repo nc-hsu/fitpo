@@ -15,7 +15,15 @@ import numpy as np
 import numpy.typing as npt
 from scipy.optimize import minimize, minimize_scalar
 
-from fitpo._common import FitResult, FloatArr, _area_error, _as_curve, _interval_area_error
+from fitpo._common import (
+    FitResult,
+    FloatArr,
+    OriginMode,
+    _area_error,
+    _as_curve,
+    _check_finite,
+    _interval_area_error,
+)
 
 type DelucaMode = Literal["auto", "trilinear-deluca", "quadrilinear-deluca"]
 _DELUCA_MODES: tuple[str, ...] = ("auto", "trilinear-deluca", "quadrilinear-deluca")
@@ -29,6 +37,7 @@ def fit_deluca_backbone(
     plateau_min_improvement: float = 0.05,
     plateau_min_force_fraction: float = 0.10,
     plateau_min_length_fraction: float = 0.05,
+    origin: OriginMode = "strict",
 ) -> FitResult:
     """Fit a trilinear or quadrilinear backbone to a pushover curve.
 
@@ -53,6 +62,20 @@ def fit_deluca_backbone(
     plateau_min_length_fraction
         ``"auto"`` keeps the plateau only if it covers at least this
         fraction of the falling branch.
+    origin
+        How to handle a curve whose first point is not ``(0, 0)``:
+
+        - ``"strict"`` (default): raise a ``ValueError`` that says how far the
+          first point is from the origin. Often the unloaded point ``(0, 0)``
+          was simply not recorded, and no correction should be guessed.
+        - ``"correct_disp"``: subtract ``d[0]`` from every displacement;
+          forces are unchanged.
+        - ``"correct_dispforc"``: subtract the whole first point
+          ``(d[0], f[0])``.
+        - ``"as-is"``: use the curve as given. The elastic segment still
+          starts at the true origin, so any initial offset counts as elastic.
+
+        With a correction, ``fitted_po`` is in the corrected coordinates.
 
     Returns
     -------
@@ -63,7 +86,7 @@ def fit_deluca_backbone(
     """
     if mode not in _DELUCA_MODES:
         raise ValueError(f"mode must be one of {_DELUCA_MODES}; got {mode!r}")
-    d, f = _as_curve(pushover, 3)
+    d, f = _as_curve(pushover, 3, origin=origin)
 
     i_peak = int(np.argmax(f))
     d_peak = float(d[i_peak])
@@ -134,11 +157,51 @@ def fit_deluca_backbone(
 
 
 def elastic_slope(
-    d_asc: FloatArr, f_asc: FloatArr, f_peak: float, *, ref_fraction: float = 0.10
+    d_asc: npt.ArrayLike,
+    f_asc: npt.ArrayLike,
+    f_peak: float,
+    *,
+    ref_fraction: float = 0.10,
 ) -> float:
-    """Secant stiffness to ``ref_fraction * f_peak`` on the rising branch."""
+    """Secant stiffness from the origin to ``ref_fraction * f_peak`` on the rising branch.
+
+    The reference point is where the rising branch first reaches
+    ``ref_fraction * f_peak``, interpolated linearly between the two samples
+    either side of that crossing. Walking to the first crossing keeps the
+    result well defined when the force is not monotone (e.g. small dips
+    before the peak). If the first sample is already at or above
+    ``ref_fraction * f_peak``, the crossing lies before the data and a
+    ``ValueError`` is raised.
+    """
+    d_arr = np.asarray(d_asc, dtype=np.float64)
+    f_arr = np.asarray(f_asc, dtype=np.float64)
+    if d_arr.ndim != 1 or d_arr.shape != f_arr.shape or d_arr.size == 0:
+        raise ValueError("d_asc and f_asc must be 1-D arrays of the same, non-zero length")
+    _check_finite(np.column_stack([d_arr, f_arr]), "d_asc/f_asc")
+    if not np.isfinite(f_peak):
+        raise ValueError("f_peak contains NaN or inf values")
     f_ref = ref_fraction * f_peak
-    d_ref = float(np.interp(f_ref, f_asc, d_asc))
+
+    above = np.flatnonzero(f_arr >= f_ref)
+    if above.size == 0:
+        raise ValueError("The rising branch never reaches ref_fraction * f_peak")
+    i = int(above[0])
+    if i == 0:
+        # The crossing lies before the first sample, so it can't be located
+        # from the data and the stiffness is undefined.
+        raise ValueError(
+            "The first sample already reaches ref_fraction * f_peak, so the elastic "
+            "reference point lies before the data; check the curve starts at its "
+            "unloaded point, or use origin='correct_dispforc'"
+        )
+    if f_arr[i] == f_ref:
+        # Exactly on a sample: use it directly.
+        d_ref = float(d_arr[i])
+    else:
+        # Same operation order as np.interp, so a monotone rising branch
+        # gives bit-identical results to interpolating with force as x-axis.
+        slope = (d_arr[i] - d_arr[i - 1]) / (f_arr[i] - f_arr[i - 1])
+        d_ref = float(slope * (f_ref - f_arr[i - 1]) + d_arr[i - 1])
     if d_ref <= 0.0:
         raise ValueError("Elastic reference displacement <= 0")
     return f_ref / d_ref

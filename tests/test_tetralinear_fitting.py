@@ -210,8 +210,9 @@ def test_explicit_knots_work_on_the_example_curves():
         d_peak, d_max = float(d[i_peak]), float(d[-1])
         d_f = d_peak + (d_max - d_peak) / 3.0
         d_r = d_peak + 2.0 * (d_max - d_peak) / 3.0
-        bb = fit_cbf_knots_backbone(curve, d_f=d_f, d_r=d_r).fitted_po
+        bb = fit_cbf_knots_backbone(curve, d_f=d_f, d_r=d_r, origin="correct_disp").fitted_po
         assert bb.shape == (5, 2)
-        assert bb[2, 0] == pytest.approx(d_f)
-        assert bb[3, 0] == pytest.approx(d_r)
+        # The knot is given in input coordinates; fitted_po is shifted by d[0].
+        assert bb[2, 0] == pytest.approx(d_f - d[0])
+        assert bb[3, 0] == pytest.approx(d_r - d[0])
         assert np.all(np.isfinite(bb))

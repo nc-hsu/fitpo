@@ -17,7 +17,14 @@ import numpy as np
 import numpy.typing as npt
 from scipy.optimize import minimize_scalar
 
-from fitpo._common import FitResult, FloatArr, _area_error, _as_curve, _interval_area_error
+from fitpo._common import (
+    FitResult,
+    FloatArr,
+    OriginMode,
+    _area_error,
+    _as_curve,
+    _interval_area_error,
+)
 from fitpo._deluca import elastic_slope
 
 type BilinearMode = Literal["bilinear-ultimate", "bilinear-pctloss"]
@@ -30,6 +37,7 @@ def fit_bilinear_backbone(
     mode: BilinearMode = "bilinear-ultimate",
     elastic_ref_fraction: float = 0.10,
     bilinear_end_fraction: float = 0.80,
+    origin: OriginMode = "strict",
 ) -> FitResult:
     """Fit a bilinear backbone (elastic line + one post-yield line).
 
@@ -49,6 +57,20 @@ def fit_bilinear_backbone(
         force on the rising branch.
     bilinear_end_fraction
         End-point force fraction for ``"bilinear-pctloss"``; unused otherwise.
+    origin
+        How to handle a curve whose first point is not ``(0, 0)``:
+
+        - ``"strict"`` (default): raise a ``ValueError`` that says how far the
+          first point is from the origin. Often the unloaded point ``(0, 0)``
+          was simply not recorded, and no correction should be guessed.
+        - ``"correct_disp"``: subtract ``d[0]`` from every displacement;
+          forces are unchanged.
+        - ``"correct_dispforc"``: subtract the whole first point
+          ``(d[0], f[0])``.
+        - ``"as-is"``: use the curve as given. The elastic segment still
+          starts at the true origin, so any initial offset counts as elastic.
+
+        With a correction, ``fitted_po`` is in the corrected coordinates.
 
     Returns
     -------
@@ -59,7 +81,7 @@ def fit_bilinear_backbone(
     """
     if mode not in _BILINEAR_MODES:
         raise ValueError(f"mode must be one of {_BILINEAR_MODES}; got {mode!r}")
-    d, f = _as_curve(pushover, 3)
+    d, f = _as_curve(pushover, 3, origin=origin)
 
     i_peak = int(np.argmax(f))
     f_peak = float(f[i_peak])

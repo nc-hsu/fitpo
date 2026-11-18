@@ -19,7 +19,14 @@ import numpy as np
 import numpy.typing as npt
 from scipy.optimize import minimize, minimize_scalar
 
-from fitpo._common import FitResult, FloatArr, _area_error, _as_curve, _interval_area_error
+from fitpo._common import (
+    FitResult,
+    FloatArr,
+    OriginMode,
+    _area_error,
+    _as_curve,
+    _interval_area_error,
+)
 from fitpo._deluca import elastic_slope
 
 type CbfCusumMode = Literal["quadrilinear-cbf-cusum"]
@@ -33,6 +40,7 @@ def fit_cbf_cusum_backbone(
     cusum_drift: float = 0.5,
     cusum_search_start_fraction: float = 0.25,
     elastic_ref_fraction: float = 0.10,
+    origin: OriginMode = "strict",
 ) -> FitResult:
     """Fit a 4-segment backbone to a CBF pushover curve, locating fracture by CUSUM.
 
@@ -51,6 +59,20 @@ def fit_cbf_cusum_backbone(
     elastic_ref_fraction
         The elastic stiffness is the secant to this fraction of the peak
         force on the rising branch.
+    origin
+        How to handle a curve whose first point is not ``(0, 0)``:
+
+        - ``"strict"`` (default): raise a ``ValueError`` that says how far the
+          first point is from the origin. Often the unloaded point ``(0, 0)``
+          was simply not recorded, and no correction should be guessed.
+        - ``"correct_disp"``: subtract ``d[0]`` from every displacement;
+          forces are unchanged.
+        - ``"correct_dispforc"``: subtract the whole first point
+          ``(d[0], f[0])``.
+        - ``"as-is"``: use the curve as given. The elastic segment still
+          starts at the true origin, so any initial offset counts as elastic.
+
+        With a correction, ``fitted_po`` is in the corrected coordinates.
 
     Returns
     -------
@@ -62,7 +84,7 @@ def fit_cbf_cusum_backbone(
         against the data. ``mode`` is ``"quadrilinear-cbf-cusum"``;
         ``objective`` is the area error over ``[d_y, d_max]``.
     """
-    d, f = _as_curve(pushover, 5)
+    d, f = _as_curve(pushover, 5, origin=origin)
     n = len(d)
 
     i_peak = int(np.argmax(f))
@@ -112,6 +134,7 @@ def fit_cbf_knots_backbone(
     d_f: float | None = None,
     d_r: float | None = None,
     elastic_ref_fraction: float = 0.10,
+    origin: OriginMode = "strict",
 ) -> FitResult:
     """Fit a CBF backbone with fixed knot displacements by joint area minimisation.
 
@@ -154,12 +177,29 @@ def fit_cbf_knots_backbone(
         plateau. If ``False``, there is no plateau: the fracture drop
         continues with its own slope down to zero force.
     d_f, d_r
-        Interior knot displacements, in the units of column 0. Give both
-        or neither; they must satisfy ``0 < d_f < d_r <= d_max``. Giving
-        them bypasses the force-fraction snapping entirely.
+        Interior knot displacements, in the units of column 0 and in the
+        coordinates of the curve as passed in; with ``origin="correct_disp"``
+        or ``"correct_dispforc"`` they are shifted by ``d[0]`` along with the
+        curve. Give both or neither; after any shift they must satisfy
+        ``0 < d_f < d_r <= d_max``. Giving them bypasses the force-fraction
+        snapping entirely.
     elastic_ref_fraction
         The elastic stiffness is the secant to this fraction of the peak
         force on the rising branch.
+    origin
+        How to handle a curve whose first point is not ``(0, 0)``:
+
+        - ``"strict"`` (default): raise a ``ValueError`` that says how far the
+          first point is from the origin. Often the unloaded point ``(0, 0)``
+          was simply not recorded, and no correction should be guessed.
+        - ``"correct_disp"``: subtract ``d[0]`` from every displacement;
+          forces are unchanged.
+        - ``"correct_dispforc"``: subtract the whole first point
+          ``(d[0], f[0])``.
+        - ``"as-is"``: use the curve as given. The elastic segment still
+          starts at the true origin, so any initial offset counts as elastic.
+
+        With a correction, ``fitted_po`` is in the corrected coordinates.
 
     Returns
     -------
@@ -182,7 +222,11 @@ def fit_cbf_knots_backbone(
     if (d_f is None) != (d_r is None):
         raise ValueError("Give both d_f and d_r, or neither")
 
+    # Explicit knots are given in the input curve's coordinates, so record the
+    # shift before applying it and move the knots with the curve.
     d, f = _as_curve(pushover, 5)
+    d_shift = float(d[0]) if origin in ("correct_disp", "correct_dispforc") else 0.0
+    d, f = _as_curve(pushover, 5, origin=origin)
     n = len(d)
 
     i_peak = int(np.argmax(f))
@@ -199,12 +243,12 @@ def fit_cbf_knots_backbone(
         # Knots given directly: no snapping, so they need not be data points.
         # Seed the inner solver from the curve at those displacements, which is
         # what the snapping path passes from the points it landed on.
-        d_f_knot = float(d_f)
-        d_r_knot = float(d_r)
+        d_f_knot = float(d_f) - d_shift
+        d_r_knot = float(d_r) - d_shift
         if not 0.0 < d_f_knot < d_r_knot <= d_max:
             raise ValueError(
-                f"Require 0 < d_f < d_r <= d_max; got d_f={d_f_knot:.6g}, "
-                f"d_r={d_r_knot:.6g}, d_max={d_max:.6g}"
+                f"Require 0 < d_f < d_r <= d_max after the origin shift; got "
+                f"d_f={d_f_knot:.6g}, d_r={d_r_knot:.6g}, d_max={d_max:.6g}"
             )
         f_f_init = float(np.interp(d_f_knot, d, f))
         f_r_init = float(np.interp(d_r_knot, d, f))

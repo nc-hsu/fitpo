@@ -14,6 +14,8 @@ import numpy as np
 import numpy.typing as npt
 from scipy.signal import find_peaks
 
+from fitpo._common import _as_curve
+
 FloatArr = npt.NDArray[np.float64]
 
 EnvelopeMode = Literal[
@@ -113,14 +115,9 @@ def fit_envelope(
     if mode == "displacement-bins" and bin_size <= 0.0:
         raise ValueError(f"bin_size must be positive; got {bin_size}")
 
-    arr = np.asarray(cyclic_pushover, dtype=np.float64)
-    if arr.ndim != 2 or arr.shape[1] != 2:
-        raise ValueError(f"cyclic_pushover must be shape (N, 2); got {arr.shape}")
-    if arr.shape[0] < 3:
-        raise ValueError("cyclic_pushover must have at least 3 points")
-
-    d: FloatArr = arr[:, 0]
-    f: FloatArr = arr[:, 1]
+    # Cyclic data goes back and forth in displacement by design, so only the
+    # shape and NaN/inf are checked here, not monotonicity.
+    d, f = _as_curve(cyclic_pushover, 3, name="cyclic_pushover", monotone=False)
 
     d_abs_max = float(np.max(np.abs(d)))
     if d_abs_max <= 0.0:
