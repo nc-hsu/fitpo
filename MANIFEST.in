@@ -1,2 +1,4 @@
+# Ship the citation, changelog and contributing guide with the source distribution.
+include CHANGELOG.md CITATION.cff CONTRIBUTING.md
 graft tests
 global-exclude *.py[cod] __pycache__

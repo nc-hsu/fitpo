@@ -1,0 +1,51 @@
+# Citation metadata for the fitpo software (https://citation-file-format.github.io).
+cff-version: 1.2.0
+message: "If you use fitpo, please cite it using the metadata from this file."
+type: software
+title: fitpo
+abstract: >-
+  fitpo fits piecewise-linear (bilinear, trilinear and quadrilinear)
+  backbones to nonlinear pushover curves by minimising the area between the
+  backbone and the curve, to define equivalent single-degree-of-freedom
+  systems of complex structures. It includes the fits of De Luca et al.
+  (2013), fits for concentrically braced frames with brace fracture, and
+  envelope extraction from cyclic pushover data.
+authors:
+  - family-names: Clemett
+    given-names: Nicholas
+    orcid: "https://orcid.org/0000-0003-3733-4971"
+    affiliation: Helmut-Schmidt-Universität
+# Uncomment and fill in at each release, e.g. version "0.1.0" and the date
+# in YYYY-MM-DD form; until then they are left out so the file validates.
+# version: "0.1.0"
+# date-released: "YYYY-MM-DD"
+license: GPL-3.0-or-later
+repository-code: "https://github.com/nc-hsu/fitpo"
+url: "https://fitpo.readthedocs.io"
+keywords:
+  - pushover analysis
+  - capacity curve
+  - backbone curve
+  - piecewise linear fit
+  - equivalent SDOF
+  - earthquake engineering
+  - concentrically braced frames
+references:
+  - type: article
+    title: >-
+      Near-optimal piecewise linear fits of static pushover capacity curves
+      for equivalent SDOF analysis
+    authors:
+      - family-names: De Luca
+        given-names: F.
+      - family-names: Vamvatsikos
+        given-names: D.
+      - family-names: Iervolino
+        given-names: I.
+    journal: Earthquake Engineering & Structural Dynamics
+    volume: 42
+    issue: 4
+    start: 523
+    end: 543
+    year: 2013
+    doi: 10.1002/eqe.2225
