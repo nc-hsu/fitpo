@@ -38,7 +38,7 @@ def test_force_trilinear_over_quadrilinear_curve(smooth_quadrilinear):
 
 
 def test_bilinear(bilinear_source):
-    fit = fit_bilinear_backbone(bilinear_source.curve, mode="bilinear-80pct").fitted_po
+    fit = fit_bilinear_backbone(bilinear_source.curve, mode="bilinear-pctloss").fitted_po
     assert fit.shape == (3, 2)
     assert np.allclose(fit[0], [0.0, 0.0])
     d_y, f_y = fit[1]
@@ -64,7 +64,7 @@ def test_peak_at_end_raises_for_tri_quadri_auto(peak_at_end):
 
 
 def test_contract_all_modes(smooth_quadrilinear):
-    fits = [fit_bilinear_backbone(smooth_quadrilinear.curve, mode="bilinear-80pct").fitted_po]
+    fits = [fit_bilinear_backbone(smooth_quadrilinear.curve, mode="bilinear-pctloss").fitted_po]
     for mode in ("auto", "trilinear-deluca", "quadrilinear-deluca"):
         fits.append(fit_deluca_backbone(smooth_quadrilinear.curve, mode=mode).fitted_po)
     for fit in fits:

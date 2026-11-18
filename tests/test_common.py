@@ -33,7 +33,7 @@ def test_deluca_modes(smooth_quadrilinear, smooth_trilinear):
 
 
 def test_bilinear_modes(bilinear_source):
-    for mode in ("bilinear-ultimate", "bilinear-80pct"):
+    for mode in ("bilinear-ultimate", "bilinear-pctloss"):
         assert fitpo.fit_bilinear_backbone(bilinear_source.curve, mode=mode).mode == mode
     # The default is bilinear-ultimate.
     assert fitpo.fit_bilinear_backbone(bilinear_source.curve).mode == "bilinear-ultimate"

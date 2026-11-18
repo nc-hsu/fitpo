@@ -4,9 +4,10 @@ Both fits share the elastic stiffness rule of the De Luca fits (secant to a
 fraction of the peak force) and differ only in where the second segment
 ends. ``"bilinear-ultimate"`` runs to the last data point, or to the point
 where the force first falls to zero for good, so it captures the whole
-curve including any loss of strength. ``"bilinear-80pct"`` stops where the
-force has dropped to a fraction (by default 80 %) of the peak, a common
-definition of the usable deformation capacity. In both, the yield force is
+curve including any loss of strength. ``"bilinear-pctloss"`` stops where the
+force has dropped to ``bilinear_end_fraction`` of the peak (0.80 by default,
+i.e. a 20 % strength loss), a common definition of the usable deformation
+capacity. In both, the yield force is
 chosen to minimise the area between the fit and the data.
 """
 
@@ -19,8 +20,8 @@ from scipy.optimize import minimize_scalar
 from fitpo._common import FitResult, FloatArr, _area_error, _as_curve, _interval_area_error
 from fitpo._deluca import elastic_slope
 
-type BilinearMode = Literal["bilinear-ultimate", "bilinear-80pct"]
-_BILINEAR_MODES: tuple[str, ...] = ("bilinear-ultimate", "bilinear-80pct")
+type BilinearMode = Literal["bilinear-ultimate", "bilinear-pctloss"]
+_BILINEAR_MODES: tuple[str, ...] = ("bilinear-ultimate", "bilinear-pctloss")
 
 
 def fit_bilinear_backbone(
@@ -40,14 +41,14 @@ def fit_bilinear_backbone(
     mode
         ``"bilinear-ultimate"`` (default): the second segment ends at the last
         data point, or at the last zero-force crossing when the curve ends
-        below zero force. ``"bilinear-80pct"``: the second segment ends where
+        below zero force. ``"bilinear-pctloss"``: the second segment ends where
         the force first drops to ``bilinear_end_fraction`` of the peak after
         the peak (or at the last point if it never does).
     elastic_ref_fraction
         The elastic stiffness is the secant to this fraction of the peak
         force on the rising branch.
     bilinear_end_fraction
-        End-point force fraction for ``"bilinear-80pct"``; unused otherwise.
+        End-point force fraction for ``"bilinear-pctloss"``; unused otherwise.
 
     Returns
     -------
@@ -67,9 +68,9 @@ def fit_bilinear_backbone(
 
     k_e = elastic_slope(d[: i_peak + 1], f[: i_peak + 1], f_peak, ref_fraction=elastic_ref_fraction)
 
-    if mode == "bilinear-80pct":
+    if mode == "bilinear-pctloss":
         d_end, f_end = _end_point_at_fraction(d, f, f_peak, i_peak, bilinear_end_fraction)
-        f_y, success = _fit_yield_80pct(d, f, f_peak, k_e, d_end, f_end)
+        f_y, success = _fit_yield_to_end(d, f, f_peak, k_e, d_end, f_end)
     else:
         d_end, f_end = _ultimate_point(d, f)
         f_y, success = _fit_yield_ultimate(d, f, f_peak, k_e, d_end, f_end)
@@ -102,7 +103,7 @@ def _end_point_at_fraction(
     return d_max, float(f[-1])
 
 
-def _fit_yield_80pct(
+def _fit_yield_to_end(
     d: FloatArr, f: FloatArr, f_peak: float, k_e: float, d_end: float, f_end: float
 ) -> tuple[float, bool]:
     """Yield force minimising the area error over the data in ``[d_y, d_end]``."""
