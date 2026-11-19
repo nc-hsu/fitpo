@@ -1,5 +1,8 @@
 # fitpo
 
+[![PyPI](https://img.shields.io/pypi/v/fitpo.svg)](https://pypi.org/project/fitpo/)
+[![Documentation](https://readthedocs.org/projects/fitpo/badge/?version=latest)](https://fitpo.readthedocs.io/en/latest/)
+[![CI](https://github.com/nc-hsu/fitpo/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/nc-hsu/fitpo/actions/workflows/ci.yml)
 <!-- Zenodo DOI badge: added after the first release. -->
 
 fitpo fits piecewise-linear backbones to nonlinear pushover curves. A
