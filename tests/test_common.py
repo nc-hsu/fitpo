@@ -80,7 +80,7 @@ def test_invalid_mode_raises(func, smooth_quadrilinear):
 
 def test_mode_is_keyword_only(smooth_quadrilinear):
     with pytest.raises(TypeError):
-        fitpo.fit_deluca_backbone(smooth_quadrilinear.curve, "trilinear-deluca")  # type: ignore[misc]
+        fitpo.fit_deluca_backbone(smooth_quadrilinear.curve, "trilinear-deluca")  # type: ignore[call-arg]
 
 
 def test_objective_and_converged(smooth_quadrilinear):

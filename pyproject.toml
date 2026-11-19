@@ -47,7 +47,7 @@ docs = [
     "matplotlib>=3.8",
 ]
 # Everything needed to develop: tests, docs, lint, type checks and packaging.
-dev = ["fitpo[test,docs]", "ruff", "mypy", "build", "twine"]
+dev = ["fitpo[test,docs]", "ruff==0.15.11", "mypy==2.4.1", "build", "twine"]
 
 [project.urls]
 Homepage = "https://github.com/nc-hsu/fitpo"
