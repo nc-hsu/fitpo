@@ -37,8 +37,8 @@ f = np.interp(d, [0, 10, 40, 80, 120], [0, 1000, 1200, 600, 600])
 curve = np.column_stack([d, f])
 
 res = fitpo.fit_deluca_backbone(curve)  # "auto": trilinear or quadrilinear
-print(res.mode)                         # quadrilinear-deluca
-print(res.fitted_po.round(1))           # breakpoints [d, F] of the backbone
+print(res.mode)  # quadrilinear-deluca
+print(res.fitted_po.round(1))  # breakpoints [d, F] of the backbone
 print(round(fitpo.area_error(curve, res.fitted_po, normalised=True), 4))  # 0.0
 ```
 
