@@ -15,6 +15,18 @@ fitpo offers:
   when a brace fractures;
 - envelopes of cyclic pushover data, ready for the backbone fits.
 
+## Which function do I need?
+
+| Your data | Function |
+|---|---|
+| A monotonic pushover curve | {func}`fitpo.fit_deluca_backbone` (or {func}`fitpo.fit_bilinear_backbone` for a bilinear shape with a set end point) |
+| A braced-frame curve with a brace-fracture drop, densely sampled | {func}`fitpo.fit_cbf_cusum_backbone` |
+| A braced-frame curve with a fracture drop and a residual plateau, also sparse envelopes | {func}`fitpo.fit_cbf_knots_backbone` |
+| A cyclic trace | {func}`fitpo.fit_envelope`, then one of the fits above on each envelope |
+
+{func}`fitpo.area_error` scores any fit against its curve, so fits of
+different shapes can be compared. See {doc}`method` for how each fit works.
+
 ```{admonition} Alpha software
 :class: warning
 

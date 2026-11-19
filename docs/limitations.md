@@ -20,6 +20,12 @@ fitpo is alpha software. Known limitations of the current version:
 - **CUSUM needs densely sampled curves.** On sparse envelopes,
   {func}`fitpo.fit_cbf_cusum_backbone` may detect no fracture and raise an
   error; use {func}`fitpo.fit_cbf_knots_backbone` instead.
+- **CUSUM depends on where its search starts.** Drops before
+  `cusum_search_start_fraction` $\times d_{max}$ are never searched, and the
+  slope is standardised over the search window only, so moving the start can
+  change which drops are detected. A small drop after the start (for example
+  from early brace buckling) can be taken for the fracture; raise the
+  fraction for such curves, and check the fit.
 - **Force-fraction knots depend on the curve crossing the levels.** In
   {func}`fitpo.fit_cbf_knots_backbone`, if the post-buckling branch stays
   above `joint_force_fraction` of the peak until the fracture, the joint knot
