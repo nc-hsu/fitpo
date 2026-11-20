@@ -169,12 +169,13 @@ The two modes differ only in the end point:
 
 ## Fits for concentrically braced frames
 
-The pushover curve of a concentrically braced frame (CBF) typically has four
-parts: an elastic rise; a gradual decline after the compression braces
-buckle; a sudden drop when a brace fractures; and a lower residual branch
-carried by the remaining braces and the frame. The De Luca shapes cannot
-follow a sudden drop in the middle of the curve, so fitpo has two fits built
-around it.
+The pushover curve of some types of concentrically braced frames (CBFs) with
+buckling braces can consist of four parts: an elastic rise; a gradual decline 
+after the compression braces buckle; a sudden drop when a brace fractures; and 
+a lower residual branch carried by the remaining braces and the frame. The 
+fitting rules defined by De Luca et al. (2013) cannot follow the post-yield 
+softening or the sudden drop in the middle of the curve due to fracture, so 
+fitpo has two fits built around it.
 
 ### CUSUM fracture detection
 

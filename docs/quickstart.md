@@ -36,7 +36,7 @@ Every backbone function returns a {class}`~fitpo.FitResult`. Its
 res.fitted_po.round(1)
 ```
 
-`objective` is the area error the fit minimised, and `converged` says
+`objective` is the value of the objective the fit minimised, and `converged` says
 whether every optimiser reported success:
 
 ```{code-cell} python

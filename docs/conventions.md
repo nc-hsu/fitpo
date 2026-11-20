@@ -19,8 +19,9 @@ the signs of its envelope first (see below).
 
 Every backbone fit, and {func}`fitpo.area_error`, assumes the curve starts at
 the unloaded point $(0, 0)$, because the elastic segment starts there. A
-curve that starts elsewhere is often missing its first, unloaded point, so
-fitpo does not guess a correction. The `origin` argument sets what happens:
+curve that starts elsewhere may either be missing its first, unloaded point, or
+it may have an initial displacement due to the application of gravity loads. 
+Fitpo does not guess a correction. The `origin` argument sets what happens:
 
 | `origin` | Effect |
 |---|---|
@@ -58,7 +59,7 @@ with four fields:
 |---|---|
 | `fitted_po` | `(M, 2)` array of the backbone's breakpoints, one `[d, F]` row each, starting at `[0, 0]`. |
 | `mode` | The shape actually fitted, e.g. `"trilinear-deluca"`. With `mode="auto"` this says which shape was chosen. |
-| `objective` | The area error the fit minimised, over a range that depends on the mode (see {doc}`method`). |
+| `objective` | The value the fit minimised, over a range that depends on the mode (see {doc}`method`). |
 | `converged` | `True` if every optimiser call reported success. If not, the fit also warns. |
 
 Every returned `fitted_po` is checked: its values are finite, its first row

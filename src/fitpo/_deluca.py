@@ -64,6 +64,17 @@ def fit_deluca_backbone(
 ) -> FitResult:
     r"""Fit a bilinear, trilinear or quadrilinear backbone to a pushover curve.
 
+    The method follows De Luca et al. (2013). The elastic stiffness
+    :math:`k_e` is the secant to ``elastic_ref_fraction`` of the peak force.
+    Each later segment is chosen to minimise the area between it and the
+    data,
+
+    .. math::
+
+        \int \left| F(d) - \hat F(d) \right| \, \mathrm{d}d ,
+
+    where :math:`F` is the curve and :math:`\hat F` the fit.
+
     Parameters
     ----------
     pushover
@@ -133,19 +144,6 @@ def fit_deluca_backbone(
         On invalid input, if the peak is at the last point (trilinear and
         quadrilinear modes), if ``F_max / k_e >= d_max`` where that point is
         needed, or if the fitted shape fails the validity checks.
-
-    Notes
-    -----
-    The method follows De Luca et al. (2013). The elastic stiffness
-    :math:`k_e` is the secant to ``elastic_ref_fraction`` of the peak force.
-    Each later segment is chosen to minimise the area between it and the
-    data,
-
-    .. math::
-
-        \int \left| F(d) - \hat F(d) \right| \, \mathrm{d}d ,
-
-    where :math:`F` is the curve and :math:`\hat F` the fit.
 
     Examples
     --------

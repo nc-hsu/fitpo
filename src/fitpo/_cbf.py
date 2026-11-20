@@ -51,8 +51,8 @@ def fit_cbf_cusum_backbone(
     1954) run on the standardised slope of the curve. The post-buckling and
     residual lines around it are then fitted by area minimisation. The
     detector needs enough samples around the drop to see the change in
-    slope, so it suits densely sampled curves; for sparse envelopes use
-    :func:`fit_cbf_knots_backbone`.
+    slope, so it suits densely sampled curves; for sparse curves based on 
+    envelopes use :func:`fit_cbf_knots_backbone`.
 
     Parameters
     ----------

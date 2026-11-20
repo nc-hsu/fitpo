@@ -75,8 +75,7 @@ def fit_envelope(
           the ``"loading-front"`` within it. Keeps significant deviations both
           above *and* below the chord (``simplify_tolerance``), so it captures a
           fracture apex like ``"adjusted-peak-to-peak"`` but additionally follows
-          the sheer post-peak drop instead of overestimating it, while still
-          dropping small saw-tooth noise.
+          the sheer post-peak drop instead of overestimating it.
     bin_size
         Displacement-bin width (same units as displacement, default ``1.0``).
         Only used when ``mode="displacement-bins"``.
